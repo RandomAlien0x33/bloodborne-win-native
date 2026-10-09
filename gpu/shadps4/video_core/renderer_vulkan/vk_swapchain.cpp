@@ -87,6 +87,13 @@ void Swapchain::Create(u32 width_, u32 height_) {
     RefreshSemaphores();
 }
 
+bool Swapchain::IsSurfaceEmpty() const {
+    const auto [result, capabilities] =
+        instance.GetPhysicalDevice().getSurfaceCapabilitiesKHR(surface);
+    return result == vk::Result::eSuccess &&
+           (capabilities.currentExtent.width == 0 || capabilities.currentExtent.height == 0);
+}
+
 void Swapchain::Recreate(u32 width_, u32 height_) {
     LOG_DEBUG(Render_Vulkan, "Recreate the swapchain: width={} height={} HDR={}", width_, height_,
               needs_hdr);

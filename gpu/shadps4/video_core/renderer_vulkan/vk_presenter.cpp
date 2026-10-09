@@ -558,14 +558,20 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     };
 
     // bbport: nothing to present to while the window is minimised (a 0x0 surface, issue #31).
-    if (window.GetWidth() == 0 || window.GetHeight() == 0) {
+    if (window.GetWidth() == 0 || window.GetHeight() == 0 || swapchain.IsSurfaceEmpty()) {
         free_frame();
         return;
     }
     // Recreate the swapchain if the window was resized (or was minimised at the last try).
+    // bbport: under submit_mutex, as after a failed present below: Swapchain::Destroy waits for
+    // the device to be idle, which no thread may submit to a queue during (the recording threads
+    // do, BB_ASYNC_SUBMIT); resizing the window again and again lost the device.
     if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight() ||
         !swapchain.IsPresentable()) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        {
+            std::scoped_lock submit_lock{Scheduler::submit_mutex};
+            swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        }
         if (!swapchain.IsPresentable()) {
             free_frame();
             return;
@@ -573,7 +579,10 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     }
 
     if (!swapchain.AcquireNextImage()) {
-        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        {
+            std::scoped_lock submit_lock{Scheduler::submit_mutex};
+            swapchain.Recreate(window.GetWidth(), window.GetHeight());
+        }
         if (!swapchain.AcquireNextImage()) {
             // User resizes the window too fast and GPU can't keep up. Skip this frame.
             LOG_WARNING(Render_Vulkan, "Skipping frame!");

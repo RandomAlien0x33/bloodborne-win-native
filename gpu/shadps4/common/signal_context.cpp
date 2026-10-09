@@ -31,6 +31,28 @@ void* GetRip(void* ctx) {
 #endif
 }
 
+u64 GetRbp(void* ctx) {
+#if defined(_WIN32)
+    return ((EXCEPTION_POINTERS*)ctx)->ContextRecord->Rbp;
+#elif defined(__linux__) && defined(ARCH_X86_64)
+    return u64(((ucontext_t*)ctx)->uc_mcontext.gregs[REG_RBP]);
+#else
+    (void)ctx;
+    return 0;
+#endif
+}
+
+u64 GetRsp(void* ctx) {
+#if defined(_WIN32)
+    return ((EXCEPTION_POINTERS*)ctx)->ContextRecord->Rsp;
+#elif defined(__linux__) && defined(ARCH_X86_64)
+    return u64(((ucontext_t*)ctx)->uc_mcontext.gregs[REG_RSP]);
+#else
+    (void)ctx;
+    return 0;
+#endif
+}
+
 bool IsWriteError(void* ctx) {
 #if defined(_WIN32)
     return ((EXCEPTION_POINTERS*)ctx)->ExceptionRecord->ExceptionInformation[0] == 1;

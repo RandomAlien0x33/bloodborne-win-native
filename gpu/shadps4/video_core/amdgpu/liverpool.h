@@ -102,6 +102,13 @@ public:
     explicit Liverpool();
     ~Liverpool();
 
+    /// bbport: before the process ends (window closed, restart from the menu). The GPU command
+    /// thread stops taking work at its next safe point, waits until the recording threads have
+    /// submitted everything and the GPU has run it, then takes no more work. Returns true when
+    /// that happened within `timeout_ms`. Ending the process with submissions in flight left the
+    /// GPU waiting on semaphores nobody would signal: a driver reset (TDR) on every exit.
+    bool Quiesce(u32 timeout_ms);
+
     void SubmitGfx(std::span<const u32> dcb, std::span<const u32> ccb);
     void SubmitAsc(u32 gnm_vqid, std::span<const u32> acb);
 
@@ -194,7 +201,7 @@ public:
         return gpu_id;
     }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     u32 GetGpuCommandProcessorThreadId() {
         return gpu_tid;
     }
@@ -338,11 +345,12 @@ private:
     u64 submissions_total = 0;
     std::atomic<u32> num_commands{};
     std::atomic<bool> submit_done{};
+    std::atomic<bool> quiesce_requested{}, quiesce_done{}; ///< bbport: Quiesce()
     std::mutex submit_mutex;
     std::condition_variable_any submit_cv;
     std::queue<Common::UniqueFunction<void>> command_queue{};
     std::thread::id gpu_id;
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     u32 gpu_tid;
 #endif
     s32 curr_qid{-1};

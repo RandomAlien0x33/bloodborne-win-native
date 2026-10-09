@@ -10,6 +10,9 @@ namespace Common {
 void* GetXmmPointer(void* ctx, u8 index);
 
 void* GetRip(void* ctx);
+/// bbport: the frame and stack pointers of a fault context (x86-64 Linux and Windows; 0 elsewhere).
+u64 GetRbp(void* ctx);
+u64 GetRsp(void* ctx);
 
 void IncrementRip(void* ctx, u64 length);
 

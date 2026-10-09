@@ -1,11 +1,11 @@
 #include "bbport_write_log.h"
 #include "bbport_game_menu.h"
+#include "bbport_mouse_camera.h"
 #include "bbport_gnm_hooks.h"
 // bbport: glue between the C loader and the vendored shadPS4 video core.
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
 #include "bbport_copy.h"
-#include <sys/resource.h>
 #include "bbport_free_check.h"
 #include "bbport_toggles.h"
 #include <algorithm>
@@ -22,6 +22,7 @@
 #include <vector>
 #include <SDL3/SDL.h>
 #include "../bbgpu.h"
+#include "video_core/amdgpu/liverpool.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
 #include "common/rdtsc.h"
@@ -267,7 +268,11 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
     StartProfileWriter();
 #endif
     g_sdk_version = config->sdk_version;
+#ifdef _WIN32
+    if (config->user_dir && !std::getenv("BB_GPU_USER_DIR")) _putenv_s("BB_GPU_USER_DIR", config->user_dir);
+#else
     if (config->user_dir) setenv("BB_GPU_USER_DIR", config->user_dir, 0);
+#endif
     Core::Emulator::FillElfInfo(*config);
     const std::string title = config->title ? config->title : "Bloodborne";
     const s32 width = config->width, height = config->height;
@@ -284,6 +289,7 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
             SDL_Delay(2);
         }
         LOG_INFO(Frontend, "Window closed by user");
+        bbgpu_quiesce(3000);
         std::fflush(stdout);
         std::_Exit(0);
     });
@@ -300,6 +306,21 @@ extern "C" int bbgpu_init(const BbGpuConfig* config) {
 }
 
 namespace Libraries::Kernel { void StartKernelService(); }
+extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
+extern "C" int bbgpu_quiesce(unsigned timeout_ms) {
+    if (!liverpool) {
+        return 1;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    const bool done = liverpool->Quiesce(timeout_ms);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start).count();
+    std::printf("GPU: %s before exit (%lld ms)\n",
+                done ? "work finished" : "work not finished in time", (long long)ms);
+    std::fflush(stdout);
+    return done ? 1 : 0;
+}
+
 extern "C" void bbgpu_register_kernel(void) {
     Libraries::Kernel::StartKernelService();
     Core::Loader::SymbolsResolver resolver;
@@ -334,6 +355,15 @@ extern "C" int bbgpu_handle_fault(void* ucontext, void* address) {
 extern "C" void bbgpu_patch_image(unsigned char* image, uint64_t size) {
     BbGnmHooks::PatchImage(image, size);
     BbGameMenu::PatchImage(image, size);
+    BbMouseCamera::PatchImage(image, size);
+}
+
+extern "C" int bbgpu_mouse_take(float* dx, float* dy, uint32_t* buttons) {
+    *dx = *dy = 0.0f;
+    u32 held = 0;
+    const bool captured = g_window && g_window->TakeMouse(*dx, *dy, held);
+    *buttons = held;
+    return captured ? 1 : 0;
 }
 
 extern "C" unsigned bbgpu_symbol_count(void) {

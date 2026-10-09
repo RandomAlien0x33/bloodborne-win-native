@@ -13,6 +13,9 @@
 #define VK_USE_PLATFORM_XLIB_KHR
 #endif
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 #include <fmt/ranges.h>
 
@@ -255,8 +258,139 @@ std::vector<const char*> GetInstanceLayers(bool enable_validation, bool enable_c
     return layers;
 }
 
+namespace {
+void SetProcessEnv(const char* name, const char* value) {
+#ifdef _WIN32
+    // The Vulkan loader reads the process environment (GetEnvironmentVariable); _putenv_s
+    // updates it as well as the CRT's copy.
+    _putenv_s(name, value ? value : "");
+#else
+    if (value) {
+        setenv(name, value, 1);
+    } else {
+        unsetenv(name);
+    }
+#endif
+}
+
+/// bbport: AMD's driver installs an implicit Vulkan layer, VK_LAYER_AMD_switchable_graphics, that
+/// loads into every Vulkan program. It picks the GPU on AMD+AMD systems (an AMD iGPU with an AMD
+/// discrete GPU), but it is loaded on AMD iGPU + NVIDIA laptops too and sits between the game and
+/// the NVIDIA driver, where it is known to break Vulkan programs. So: the GPU the port will use
+/// (the same rule as Instance's choice, or the configured index) is looked up first with the layer
+/// off; the layer stays on when that GPU is AMD's and is disabled for this process only when the
+/// game runs on another vendor's GPU in a system that also has an AMD GPU. The user's own
+/// DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1 (any value) or BB_AMD_SWITCHABLE_LAYER=1 (keep) wins.
+void ChooseAmdSwitchableLayer(s32 physical_device_index) {
+    static constexpr const char* DisableVar = "DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1";
+    if (std::getenv(DisableVar)) {
+        LOG_INFO(Render_Vulkan, "AMD switchable graphics layer: {} set by the user", DisableVar);
+        return;
+    }
+    if (const char* keep = std::getenv("BB_AMD_SWITCHABLE_LAYER"); keep && keep[0] == '1') {
+        return;
+    }
+    const auto& d = VULKAN_HPP_DEFAULT_DISPATCHER;
+    if (!d.vkCreateInstance || !d.vkGetInstanceProcAddr) {
+        return;
+    }
+    SetProcessEnv(DisableVar, "1"); // the probe sees every GPU (the layer may hide some)
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    info.pApplicationInfo = &app;
+    VkInstance probe = VK_NULL_HANDLE;
+    bool disable = false;
+    std::string chosen_name;
+    if (d.vkCreateInstance(&info, nullptr, &probe) == VK_SUCCESS) {
+        const auto get = [&](const char* name) { return d.vkGetInstanceProcAddr(probe, name); };
+        const auto enumerate =
+            reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(get("vkEnumeratePhysicalDevices"));
+        const auto properties = reinterpret_cast<PFN_vkGetPhysicalDeviceProperties>(
+            get("vkGetPhysicalDeviceProperties"));
+        const auto memory = reinterpret_cast<PFN_vkGetPhysicalDeviceMemoryProperties>(
+            get("vkGetPhysicalDeviceMemoryProperties"));
+        const auto destroy = reinterpret_cast<PFN_vkDestroyInstance>(get("vkDestroyInstance"));
+        u32 count = 0;
+        std::vector<VkPhysicalDevice> devices;
+        if (enumerate && properties && memory &&
+            enumerate(probe, &count, nullptr) == VK_SUCCESS && count) {
+            devices.resize(count);
+            enumerate(probe, &count, devices.data());
+            devices.resize(count);
+        }
+        struct Candidate {
+            VkPhysicalDeviceProperties props;
+            u64 local_memory;
+        };
+        std::vector<Candidate> candidates;
+        bool any_amd = false;
+        for (VkPhysicalDevice device : devices) {
+            Candidate c{};
+            properties(device, &c.props);
+            VkPhysicalDeviceMemoryProperties mem{};
+            memory(device, &mem);
+            for (u32 i = 0; i < mem.memoryHeapCount; ++i) {
+                if ((mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+                    mem.memoryHeaps[i].size > c.local_memory) {
+                    c.local_memory = mem.memoryHeaps[i].size;
+                }
+            }
+            any_amd |= c.props.vendorID == 0x1002;
+            candidates.push_back(c);
+        }
+        // Instance's rule: the target API version, a discrete GPU, not a CPU renderer, the most
+        // device-local memory.
+        const auto better = [](const Candidate& a, const Candidate& b) {
+            const bool a_api = a.props.apiVersion >= TargetVulkanApiVersion;
+            const bool b_api = b.props.apiVersion >= TargetVulkanApiVersion;
+            if (a_api != b_api) {
+                return a_api;
+            }
+            const bool a_discrete = a.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+            const bool b_discrete = b.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+            if (a_discrete != b_discrete) {
+                return a_discrete;
+            }
+            const bool a_cpu = a.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+            const bool b_cpu = b.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+            if (a_cpu != b_cpu) {
+                return b_cpu;
+            }
+            return a.local_memory > b.local_memory;
+        };
+        const Candidate* chosen = nullptr;
+        if (physical_device_index >= 0 && u32(physical_device_index) < candidates.size()) {
+            chosen = &candidates[physical_device_index];
+        } else {
+            for (const auto& c : candidates) {
+                if (!chosen || better(c, *chosen)) {
+                    chosen = &c;
+                }
+            }
+        }
+        if (chosen) {
+            chosen_name = chosen->props.deviceName;
+            disable = any_amd && chosen->props.vendorID != 0x1002;
+        }
+        if (destroy) {
+            destroy(probe, nullptr);
+        }
+    }
+    if (disable) {
+        std::printf("GPU: AMD switchable graphics layer off for this game (it runs on %s; "
+                    "BB_AMD_SWITCHABLE_LAYER=1 keeps the layer)\n",
+                    chosen_name.c_str());
+    } else {
+        SetProcessEnv(DisableVar, nullptr);
+    }
+}
+} // namespace
+
 vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool enable_validation,
-                                  bool enable_crash_diagnostic) {
+                                  bool enable_crash_diagnostic, s32 physical_device_index) {
     LOG_INFO(Render_Vulkan, "Creating vulkan instance");
 
 #if defined(__APPLE__)
@@ -274,6 +408,8 @@ vk::UniqueInstance CreateInstance(Frontend::WindowSystemType window_type, bool e
     static vk::detail::DynamicLoader dl;
     VULKAN_HPP_DEFAULT_DISPATCHER.init(
         dl.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr"));
+
+    ChooseAmdSwitchableLayer(physical_device_index);
 
     const auto [available_version_result, available_version] =
         VULKAN_HPP_DEFAULT_DISPATCHER.vkEnumerateInstanceVersion

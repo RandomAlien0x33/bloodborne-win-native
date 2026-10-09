@@ -1,5 +1,19 @@
-// bbport: SDL3 window for the Vulkan swapchain (X11 or Wayland).
+// bbport: SDL3 window for the Vulkan swapchain (X11, Wayland or Win32).
 #include <cstdio>
+#include <cstring>
+#ifdef _WIN32
+#include <strings.h>
+// bbport: no strcasestr in the Windows CRT (BB_DISPLAY matches part of a monitor's name).
+static const char* strcasestr(const char* haystack, const char* needle) {
+    const std::size_t n = std::strlen(needle);
+    for (; *haystack; ++haystack) {
+        if (strncasecmp(haystack, needle, n) == 0) {
+            return haystack;
+        }
+    }
+    return n ? nullptr : haystack;
+}
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <SDL3/SDL.h>
@@ -7,6 +21,8 @@
 #include "common/logging/log.h"
 #include "sdl_window.h"
 #include "bbport_overlay.h"
+#include "bbport_settings.h"
+#include "bbport_mouse_camera.h"
 
 namespace Frontend {
 
@@ -69,7 +85,8 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
     SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_VULKAN_BOOLEAN, true);
     const char* fullscreen = std::getenv("BB_FULLSCREEN");
-    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, fullscreen && fullscreen[0] == '1');
+    SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN,
+                           fullscreen ? fullscreen[0] == '1' : BbSettings::Get().fullscreen.load());
     base_title = title;
     window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
@@ -77,6 +94,12 @@ WindowSDL::WindowSDL(s32 width_, s32 height_, const char* title) : width{width_}
 
     const char* driver = SDL_GetCurrentVideoDriver();
     const SDL_PropertiesID wp = SDL_GetWindowProperties(window);
+#ifdef _WIN32
+    if (driver && !std::strcmp(driver, "windows")) {
+        window_info.type = WindowSystemType::Windows;
+        window_info.render_surface = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr);
+    } else
+#endif
     if (driver && !std::strcmp(driver, "x11")) {
         window_info.type = WindowSystemType::X11;
         window_info.display_connection = SDL_GetPointerProperty(wp, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr);
@@ -120,6 +143,83 @@ void WindowSDL::UpdateTextTitle() {
     BbOverlay::SetTextPrompt(text_active, text_prompt, text);
 }
 
+bool WindowSDL::TakeMouse(float& dx, float& dy, u32& buttons) {
+    std::scoped_lock lock{mouse_mutex};
+    dx = mouse_dx;
+    dy = mouse_dy;
+    buttons = mouse_held | mouse_clicked; // a click shorter than a game frame still counts
+    mouse_dx = mouse_dy = 0.0f;
+    mouse_clicked = 0;
+    return mouse_captured.load(std::memory_order_relaxed);
+}
+
+void WindowSDL::UpdateMouseCapture() {
+    const bool focused = (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0;
+    // As in PC games: the window holds the mouse after a click inside it (mouse_armed), not as
+    // soon as it gets focus; Alt+Tab or another window disarms it, Left Alt held frees the
+    // cursor until the next click.
+    const bool alt = (SDL_GetModState() & SDL_KMOD_LALT) != 0;
+    if (!focused || alt) {
+        mouse_armed = false;
+    }
+    const bool want = BbSettings::Get().mouse_camera.load() && focused && mouse_armed && !alt &&
+                      !text_active && !BbOverlay::CapturesInput();
+    if (want != SDL_GetWindowRelativeMouseMode(window)) {
+        SDL_SetWindowRelativeMouseMode(window, want);
+    }
+    if (want != mouse_captured.load(std::memory_order_relaxed)) {
+        // Motion and buttons from before (the click that focused the window) are not the game's.
+        std::scoped_lock lock{mouse_mutex};
+        mouse_dx = mouse_dy = 0.0f;
+        mouse_held = mouse_clicked = 0;
+        mouse_captured.store(want, std::memory_order_relaxed);
+    }
+}
+
+/// Mouse events while the window holds the mouse: motion turns the camera through the hook
+/// (at once, from this thread) or waits for the pad as a stick; buttons wait for the pad.
+bool WindowSDL::HandleMouse(const SDL_Event& event) {
+    if (!mouse_captured.load(std::memory_order_relaxed)) {
+        // The click that arms the capture is not the game's (no attack on it).
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && BbSettings::Get().mouse_camera.load() &&
+            !text_active && !BbOverlay::CapturesInput() &&
+            (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS) != 0) {
+            mouse_armed = true;
+            return true;
+        }
+        return false;
+    }
+    switch (event.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+        if (BbMouseCamera::Active()) {
+            const auto& s = BbSettings::Get();
+            // Degrees per count = 0.022 x sensitivity; the game's pitch grows looking down.
+            const float k = s.mouse_sensitivity.load() * 0.022f * 3.14159265f / 180.0f;
+            BbMouseCamera::Turn(event.motion.yrel * k * (s.mouse_invert_y ? -1.0f : 1.0f),
+                                event.motion.xrel * k);
+        } else {
+            std::scoped_lock lock{mouse_mutex};
+            mouse_dx += event.motion.xrel;
+            mouse_dy += event.motion.yrel;
+        }
+        return true;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP: {
+        std::scoped_lock lock{mouse_mutex};
+        const u32 mask = SDL_BUTTON_MASK(event.button.button);
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            mouse_held |= mask;
+            mouse_clicked |= mask;
+        } else {
+            mouse_held &= ~mask;
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
 bool WindowSDL::PollEvents() {
     {
         std::scoped_lock lock{text_mutex};
@@ -133,6 +233,7 @@ bool WindowSDL::PollEvents() {
     if (!text_active) {
         BbOverlay::UpdateTextInput(window);
     }
+    UpdateMouseCapture();
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_MOUSE_MOTION) {
@@ -154,7 +255,7 @@ bool WindowSDL::PollEvents() {
             UpdateTextTitle();
             continue;
         }
-        if (BbOverlay::HandleEvent(event)) {
+        if (HandleMouse(event) || BbOverlay::HandleEvent(event)) {
             continue;
         }
         switch (event.type) {
@@ -166,6 +267,12 @@ bool WindowSDL::PollEvents() {
             height = h;
             break;
         }
+        case SDL_EVENT_KEY_DOWN:
+            // F11: borderless fullscreen at the desktop size, or back to the window.
+            if (event.key.key == SDLK_F11 && !event.key.repeat) {
+                SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+            }
+            break;
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
             is_open = false;

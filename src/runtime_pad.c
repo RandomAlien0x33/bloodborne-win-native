@@ -6,6 +6,8 @@
  *   E Square, Q Triangle, 1 L1, 3 R1, R L2, F R2, Z L3, C R3,
  *   Enter Options, Tab left touchpad, Backspace right touchpad,
  *   IJKL d-pad (I up, K down, J left, L right).
+ * Mouse (bbport): it turns the camera while the game window holds it (bbport_mouse_camera.cpp,
+ * or the right stick when that hook is not in); left button R1, right R2, middle R3.
  *
  * Stick neutral: SDL exposes no way to read a pad's calibration and some clones report a
  * biased neutral (a Switch-style pad was seen returning both sticks at a constant ~ +/-16380).
@@ -29,7 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <time.h>
 #include <SDL3/SDL.h>
 #include <sys/stat.h>
@@ -72,7 +73,7 @@ _Static_assert(__builtin_offsetof(PadData,touches)==60,"OrbisPadData touch offse
 _Static_assert(__builtin_offsetof(PadData,timestamp)==80,"OrbisPadData timestamp offset");
 _Static_assert(sizeof(ControllerInfo)==28,"OrbisPadControllerInformation layout");
 
-static pthread_mutex_t lock=PTHREAD_MUTEX_INITIALIZER;
+static HostMutex lock=HOST_MUTEX_INIT;
 static int initialized, opened, sdl_ready;
 static SDL_Gamepad *gamepad;
 static size_t reads;
@@ -93,7 +94,7 @@ static int cal_base[4];                /* 0: normal pad; else |neutral| of a bia
 static int cal_max[4][2];              /* largest push seen per direction on a biased axis */
 static uint64_t cal_since;
 
-static uint64_t now_us(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000u+(uint64_t)t.tv_nsec/1000u; }
+static uint64_t now_us(void) { return host_monotonic_ns()/1000u; } /* bbport: Windows too */
 static uint8_t trigger(int16_t v) { int x=v>>7; return (uint8_t)(x<0 ? 0 : x>255 ? 255 : x); }
 static void cal_load(void) {
     static int loaded;
@@ -210,6 +211,14 @@ static const char *preferred_gamepad(void) {
     if (!read) { want=getenv("BB_GAMEPAD"); if (want && !*want) want=NULL; read=1; }
     return want;
 }
+#ifdef _WIN32
+/* No strcasestr in the Windows CRT: ASCII case-insensitive search (names and GUIDs). */
+static const char *strcasestr(const char *haystack, const char *needle) {
+    const size_t n=strlen(needle);
+    for (; *haystack; ++haystack) if (!strncasecmp(haystack,needle,n)) return haystack;
+    return n ? NULL : haystack;
+}
+#endif
 static int is_preferred(SDL_JoystickID id, const char *want) {
     char guid[33];
     SDL_GUIDToString(SDL_GetGamepadGUIDForID(id),guid,sizeof guid);
@@ -292,7 +301,9 @@ static const uint32_t input_buttons[IN_COUNT]={
 };
 #define MAX_BIND 4
 enum { PAD_LEFT_TRIGGER=SDL_GAMEPAD_BUTTON_COUNT, PAD_RIGHT_TRIGGER }; /* triggers as buttons */
-typedef struct { int key_count, pad_count; SDL_Scancode keys[MAX_BIND]; int pad[MAX_BIND]; } Binding;
+/* mouse: SDL_BUTTON_MASK bits (key.<input> names mouse_left, mouse_right, mouse_middle,
+ * mouse_x1, mouse_x2). */
+typedef struct { int key_count, pad_count; SDL_Scancode keys[MAX_BIND]; int pad[MAX_BIND]; uint32_t mouse; } Binding;
 static Binding bindings[IN_COUNT];
 static int bindings_ready;
 
@@ -320,6 +331,9 @@ static void bind_defaults(void) {
         {IN_LEFT,SDL_GAMEPAD_BUTTON_DPAD_LEFT}, {IN_RIGHT,SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
     };
     memset(bindings,0,sizeof bindings);
+    bindings[IN_R1].mouse=SDL_BUTTON_LMASK;
+    bindings[IN_R2].mouse=SDL_BUTTON_RMASK;
+    bindings[IN_R3].mouse=SDL_BUTTON_MMASK;
     for (size_t i=0;i<sizeof(keys)/sizeof(*keys);++i) {
         Binding *b=&bindings[keys[i].input]; b->keys[b->key_count++]=keys[i].key;
     }
@@ -349,12 +363,21 @@ static void load_bindings(void) {
         for (int i=0;i<IN_COUNT;++i) if (!strcmp(line+4,input_names[i])) input=i;
         if (input<0 || (pad && input>=IN_MOVE_UP)) { printf("Runtime: controls: unknown input %s\n",line); continue; }
         Binding *b=&bindings[input];
-        if (keyboard) b->key_count=0; else b->pad_count=0;
+        if (keyboard) { b->key_count=0; b->mouse=0; } else b->pad_count=0;
         for (char *name=strtok(eq+1,",\r\n"); name; name=strtok(NULL,",\r\n")) {
             while (*name==' ') ++name;
             for (char *end=name+strlen(name); end>name && end[-1]==' ';) *--end=0;
             if (!*name) continue;
-            if (keyboard) {
+            static const struct { const char *name; uint32_t mask; } mouse_names[]={
+                {"mouse_left",SDL_BUTTON_LMASK}, {"mouse_right",SDL_BUTTON_RMASK},
+                {"mouse_middle",SDL_BUTTON_MMASK}, {"mouse_x1",SDL_BUTTON_X1MASK}, {"mouse_x2",SDL_BUTTON_X2MASK},
+            };
+            uint32_t mouse=0;
+            for (size_t m=0;keyboard && m<sizeof(mouse_names)/sizeof(*mouse_names);++m)
+                if (!SDL_strcasecmp(name,mouse_names[m].name)) mouse=mouse_names[m].mask;
+            if (mouse) {
+                b->mouse|=mouse;
+            } else if (keyboard) {
                 const SDL_Scancode s=SDL_GetScancodeFromName(name);
                 if (s==SDL_SCANCODE_UNKNOWN) printf("Runtime: controls: unknown key \"%s\" for %s\n",name,line+4);
                 else if (b->key_count<MAX_BIND) b->keys[b->key_count++]=s;
@@ -367,9 +390,26 @@ static void load_bindings(void) {
     }
     fclose(f);
 }
+static uint32_t mouse_buttons; /* this sample's mouse buttons (sample_host) */
 static int key_down(const bool *k, int input) {
-    for (int i=0;i<bindings[input].key_count;++i) if (k[bindings[input].keys[i]]) return 1;
+    if (bindings[input].mouse & mouse_buttons) return 1;
+    for (int i=0;k && i<bindings[input].key_count;++i) if (k[bindings[input].keys[i]]) return 1;
     return 0;
+}
+/* Mouse motion as the right stick, when the camera hook is not in (another game version):
+ * the tilt follows the mouse speed, 500 counts/s tilting it fully. */
+static void mouse_stick(PadData *d, float dx, float dy) {
+    static uint64_t last;
+    const uint64_t now=now_us();
+    const float seconds=last && now>last && now-last<100000 ? (float)(now-last)*1e-6f : 1.0f/60.0f;
+    last=now;
+    if (dx==0 && dy==0) return;
+    const float full=500.0f;
+    float tx=dx/seconds/full, ty=dy/seconds/full;
+    tx=tx<-1 ? -1 : tx>1 ? 1 : tx;
+    ty=ty<-1 ? -1 : ty>1 ? 1 : ty;
+    d->right_x=(uint8_t)(128+(int)(tx*127.0f));
+    d->right_y=(uint8_t)(128+(int)(ty*127.0f));
 }
 /* The bound gamepad buttons' state; triggers as their analog value. */
 static int pad_value(SDL_Gamepad *g, int input) {
@@ -412,6 +452,9 @@ static void sample_host(PadData *d) {
     if (!bindings_ready) { load_bindings(); bindings_ready=1; }
     if (bbgpu_overlay_captures_input()) return; /* settings menu open: neutral input */
     const bool *k=SDL_WasInit(SDL_INIT_VIDEO) ? SDL_GetKeyboardState(NULL) : NULL;
+    float mouse_dx=0, mouse_dy=0;
+    mouse_buttons=0;
+    const int mouse_held=k && bbgpu_mouse_take(&mouse_dx,&mouse_dy,&mouse_buttons);
     if (g) {
         int touch_right=0;
         for (int i=IN_CROSS;i<=IN_RIGHT;++i) {
@@ -445,7 +488,8 @@ static void sample_host(PadData *d) {
         if ((d->buttons & BTN_TOUCHPAD) && !d->touch_count) touch_click(d,0);
         if (touch_right) touch_click(d,1);
     }
-    if (k) apply_keyboard(d,k);
+    if (k || mouse_buttons) apply_keyboard(d,k);
+    if (mouse_held) mouse_stick(d,mouse_dx,mouse_dy);
 }
 
 /* BB_PAD_FILE=<file>: scripted input for automated runs. The file holds whitespace-separated
@@ -465,8 +509,14 @@ static void read_inject(void) {
     last_check=now;
     struct stat st;
     if (stat(path,&st)!=0) return;
+#ifdef _WIN32
+    /* Whole-second times: the size tells writes within the same second apart. */
+    if (st.st_mtime==mtime.tv_sec && st.st_size==mtime.tv_nsec) return;
+    mtime.tv_sec=st.st_mtime; mtime.tv_nsec=(long)st.st_size;
+#else
     if (st.st_mtim.tv_sec==mtime.tv_sec && st.st_mtim.tv_nsec==mtime.tv_nsec) return;
     mtime=st.st_mtim;
+#endif
     FILE *f=fopen(path,"r");
     if (!f) return;
     static const struct { const char *name; uint32_t ps; } names[]={
@@ -592,16 +642,16 @@ static void sample(PadData *d) {
     touch_ids(d);
 }
 
-static ABI int32_t pad_init(void) { pthread_mutex_lock(&lock); initialized=1; pthread_mutex_unlock(&lock); return 0; }
+static ABI int32_t pad_init(void) { host_lock(&lock); initialized=1; host_unlock(&lock); return 0; }
 static ABI int32_t pad_open(int32_t user, int32_t type, int32_t index, const void *param) {
     (void)param;
     if (!initialized) return ERR_NOT_INITIALIZED;
     if (user!=1) return ERR_INVALID_ARG;
     if (type!=0 && type!=2) return ERR_INVALID_ARG; /* standard / special port */
     if (index) return ERR_INVALID_ARG;
-    pthread_mutex_lock(&lock);
+    host_lock(&lock);
     int already=opened; opened=1;
-    pthread_mutex_unlock(&lock);
+    host_unlock(&lock);
     if (already) return ERR_ALREADY_OPENED;
     puts("Runtime: pad opened for user 1 (SDL gamepad or keyboard)");
     return PAD_HANDLE;
@@ -613,9 +663,9 @@ static ABI int32_t pad_close(int32_t handle) {
 static ABI int32_t pad_read_state(int32_t handle, PadData *data) {
     if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
     if (!data) return ERR_INVALID_ARG;
-    pthread_mutex_lock(&lock);
+    host_lock(&lock);
     sample(data); ++reads;
-    pthread_mutex_unlock(&lock);
+    host_unlock(&lock);
     return 0;
 }
 /* Buffered read: the port samples once per call, so one entry is returned. */
@@ -632,19 +682,19 @@ static ABI int32_t pad_info(int32_t handle, ControllerInfo *info) {
     info->pixel_density=44.86f; info->resolution_x=1920; info->resolution_y=943;
     info->dead_zone_left=info->dead_zone_right=2;
     info->connection_type=0; info->connected=1; info->device_class=0;
-    pthread_mutex_lock(&lock);
+    host_lock(&lock);
     current_gamepad();
     info->connected_count=connected_count ? connected_count : 1;
-    pthread_mutex_unlock(&lock);
+    host_unlock(&lock);
     return 0;
 }
 static ABI int32_t pad_vibration(int32_t handle, const uint8_t *param) {
     if (handle!=PAD_HANDLE || !opened) return ERR_INVALID_HANDLE;
     if (!param) return ERR_INVALID_ARG;
-    pthread_mutex_lock(&lock);
+    host_lock(&lock);
     SDL_Gamepad *g=current_gamepad();
     if (g) SDL_RumbleGamepad(g,(uint16_t)(param[0]*257),(uint16_t)(param[1]*257),1000);
-    pthread_mutex_unlock(&lock);
+    host_unlock(&lock);
     return 0;
 }
 static ABI int32_t pad_ok_handle(int32_t handle) { return handle==PAD_HANDLE && opened ? 0 : ERR_INVALID_HANDLE; }

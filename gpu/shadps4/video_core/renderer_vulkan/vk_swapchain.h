@@ -28,6 +28,10 @@ public:
     /// Recreates the swapchain with a given size and current surface.
     void Recreate(u32 width, u32 height);
 
+    /// bbport: the surface has no area now (a minimised window). On Windows SDL keeps the old
+    /// window size when minimising, so the size check alone misses it: the surface is asked.
+    bool IsSurfaceEmpty() const;
+
     /// Acquires the next image in the swapchain.
     bool AcquireNextImage();
 

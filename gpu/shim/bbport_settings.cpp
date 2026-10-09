@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_settings.h"
 
+#include <filesystem>
+#include <system_error>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -58,6 +60,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.debug_view = std::clamp(i, 0, DebugViewCount - 1);
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "mouse_camera") {
+        v.mouse_camera = i != 0;
+    } else if (key == "mouse_sensitivity") {
+        v.mouse_sensitivity = Clamp(f, 0.05f, 20.0f);
+    } else if (key == "mouse_invert_y") {
+        v.mouse_invert_y = i != 0;
     } else if (key == "menu_pos") {
         float x = -1.0f, y = -1.0f;
         if (std::sscanf(value.c_str(), "%f,%f", &x, &y) == 2 && x >= 0.0f && x <= 1.0f && y >= 0.0f &&
@@ -71,6 +79,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.fsr4_invert_jitter = i != 0;
     } else if (key == "model_lod") {
         v.model_lod = std::clamp(i, -2, 2);
+    } else if (key == "memory_model") {
+        for (int m = 0; m < MemoryModelCount; ++m) {
+            if (value == MemoryModelKeys[m]) v.memory_model = m;
+        }
+    } else if (key == "fullscreen") {
+        v.fullscreen = i != 0;
     } else if (key == "live_resolution") {
         v.live_resolution = value == "auto" ? -1 : std::clamp(i, 0, 1);
     } else if (key == "output_res") {
@@ -159,16 +173,22 @@ void Load() {
         v.startup_effects[e] = v.effects[e];
     }
     v.startup_model_lod = v.model_lod;
+    v.startup_memory_model = v.memory_model;
     v.startup_output_res = v.output_res;
     v.startup_live_resolution = v.live_resolution;
 }
 
-void ConfigureUpscalerSupport(bool fsr4, bool fsr411) {
+void ConfigureUpscalerSupport(bool fsr4, bool fsr411, bool dlss) {
     auto& v = Get();
     v.fsr4_supported = fsr4;
     v.fsr411_supported = fsr4 && fsr411;
+    v.dlss_supported = dlss;
     const int requested = v.upscaler;
-    if ((requested == UpscalerFsr4 && !v.fsr4_supported) ||
+    if (requested == UpscalerDlss && !dlss) {
+        v.fsr4_problem = "DLSS needs an NVIDIA RTX GPU, its driver's NGX and nvngx_dlss; using FSR 3.1";
+        std::printf("Upscaler: dlss unavailable; falling back to FSR 3.1 before the first frame\n");
+        v.upscaler = UpscalerFsr3;
+    } else if ((requested == UpscalerFsr4 && !v.fsr4_supported) ||
         (requested == UpscalerFsr411 && !v.fsr411_supported)) {
         v.fsr4_problem = "GPU does not support the selected FSR 4 shaders; using FSR 3.1";
         std::printf("Upscaler: %s unsupported on this GPU; falling back to FSR 3.1 before the first frame\n",
@@ -235,6 +255,9 @@ void Save() {
     put("reactive_max", fixed(v.reactive_max, 2));
     put("debug_view", std::to_string(v.debug_view.load()));
     put("show_fps", flag(v.show_fps));
+    put("mouse_camera", flag(v.mouse_camera));
+    put("mouse_sensitivity", fixed(v.mouse_sensitivity, 2));
+    put("mouse_invert_y", flag(v.mouse_invert_y));
     put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
     put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));
     // Read by patches.py at start.
@@ -242,8 +265,10 @@ void Save() {
         put(Effects[e].key, flag(v.effects[e]));
     }
     put("model_lod", std::to_string(v.model_lod.load()));
+    put("memory_model", MemoryModelKeys[std::clamp(v.memory_model.load(), 0, MemoryModelCount - 1)]);
     put("output_res", std::to_string(OutputWidths[v.output_res]) + "x" +
                           std::to_string(OutputHeights[v.output_res]));
+    put("fullscreen", std::to_string(int(v.fullscreen.load())));
     // Read by run.sh at start.
     put("live_resolution", v.live_resolution < 0 ? "auto" : flag(v.live_resolution != 0));
     if (v.menu_x >= 0.0f && v.menu_y >= 0.0f) {
@@ -289,7 +314,13 @@ void Save() {
     FILE* file = std::fopen(temporary.c_str(), "w");
     bool ok = file && std::fwrite(out.data(), 1, out.size(), file) == out.size();
     ok = file && std::fclose(file) == 0 && ok;
-    if (!ok || std::rename(temporary.c_str(), Path()) != 0) {
+    // std::filesystem::rename replaces an existing file on Windows too (std::rename fails there
+    // when the target exists: every save after the first was lost).
+    std::error_code error;
+    if (ok) {
+        std::filesystem::rename(temporary, Path(), error);
+    }
+    if (!ok || error) {
         std::printf("Settings: cannot write %s\n", Path());
     }
 }

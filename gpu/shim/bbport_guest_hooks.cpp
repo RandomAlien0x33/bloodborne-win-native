@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_guest_hooks.h"
+// bbport (Windows): a Linux-only diagnostic (signals, /proc, process_vm_readv, dma-buf or
+// mprotect traps); off unless its variables are set. Windows builds the inert API below.
+#ifndef _WIN32
 #include "bbport_heap_sites.h"
 #include "bbport_toggles.h"
 
@@ -416,3 +419,9 @@ void Install(RangeCallback on_gpu_range_allocated) {
     }
 }
 } // namespace BbGuestHooks
+#else
+#include <cstdint>
+namespace BbGuestHooks {
+void Install(RangeCallback) {}
+} // namespace BbGuestHooks
+#endif

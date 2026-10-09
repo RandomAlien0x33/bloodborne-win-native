@@ -41,6 +41,7 @@ struct Stream {
 std::array<Stream, MaxStreams> streams;
 std::atomic<u32> num_streams{0};
 bool enabled = false;
+const Instance* fault_instance = nullptr; // bbport: VK_EXT_device_fault at device loss
 std::once_flag init_once;
 vk::Buffer marker_buffer{};
 VmaAllocation marker_allocation{};
@@ -56,6 +57,7 @@ struct ArgsNote {
 std::array<ArgsNote, ArgSlots> args_notes{};
 
 void Init(const Instance& instance) {
+    fault_instance = &instance;
     const char* env = std::getenv("BB_BREADCRUMBS");
     if (env && env[0] == '0') {
         return;
@@ -276,6 +278,42 @@ void ReportDeviceLost(const char* where) {
     static std::atomic_flag reported = ATOMIC_FLAG_INIT;
     if (enabled && !reported.test_and_set()) {
         Report("at device lost", where);
+    }
+    // bbport: the driver's own account (VK_EXT_device_fault): the faulting addresses and the
+    // vendor's codes, once.
+    static std::atomic_flag faulted = ATOMIC_FLAG_INIT;
+    if (fault_instance && fault_instance->IsDeviceFaultSupported() && !faulted.test_and_set()) {
+        const vk::Device device = fault_instance->GetDevice();
+        vk::DeviceFaultCountsEXT counts{};
+        const vk::Result counted = device.getFaultInfoEXT(&counts, nullptr);
+        if (counts.addressInfoCount == 0 && counts.vendorInfoCount == 0) {
+            // No faulting address: the GPU stopped making progress (a wait that is never
+            // satisfied, or work too long for the driver's timeout) rather than touching memory
+            // it may not.
+            std::printf("GPU fault: the driver reports no faulting address (%s): a hang, not a bad "
+                        "memory access\n", vk::to_string(counted).c_str());
+            std::fflush(stdout);
+            return;
+        }
+        std::vector<vk::DeviceFaultAddressInfoEXT> addresses(counts.addressInfoCount);
+        std::vector<vk::DeviceFaultVendorInfoEXT> vendor(counts.vendorInfoCount);
+        counts.vendorBinarySize = 0;
+        vk::DeviceFaultInfoEXT info{};
+        info.pAddressInfos = addresses.data();
+        info.pVendorInfos = vendor.data();
+        const vk::Result result = device.getFaultInfoEXT(&counts, &info);
+        std::printf("GPU fault (%s): %s\n", vk::to_string(result).c_str(), info.description.data());
+        for (u32 i = 0; i < counts.addressInfoCount; ++i) {
+            const auto& a = addresses[i];
+            std::printf("  address %#llx (+-%#llx): %s\n", (unsigned long long)a.reportedAddress,
+                        (unsigned long long)a.addressPrecision, vk::to_string(a.addressType).c_str());
+        }
+        for (u32 i = 0; i < counts.vendorInfoCount; ++i) {
+            const auto& v = vendor[i];
+            std::printf("  vendor: %s (code %#llx, data %#llx)\n", v.description.data(),
+                        (unsigned long long)v.vendorFaultCode, (unsigned long long)v.vendorFaultData);
+        }
+        std::fflush(stdout);
     }
 }
 

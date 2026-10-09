@@ -8,12 +8,15 @@
 #include <unordered_map>
 #include <cstring>
 #include <string>
+#ifndef _WIN32
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <unistd.h>
+#endif
 #include <functional>
 
 #include "bbport_copy.h"
+#include "bbport_platform.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 #include "bbport_toggles.h"
 #include "bbport_wait_trace.h"
@@ -36,6 +39,10 @@ std::atomic<u32> producer_reports{0};
 
 /// Names a thread of this process (its comm).
 std::string ThreadName(u32 tid) {
+#ifdef _WIN32
+    char buffer[64]{};
+    return BbPlatform::ThreadName(tid, buffer, sizeof(buffer)) ? std::string{buffer} : "?";
+#else
     char path[64];
     std::snprintf(path, sizeof(path), "/proc/self/task/%u/comm", tid);
     std::string name = "?";
@@ -50,26 +57,36 @@ std::string ThreadName(u32 tid) {
         std::fclose(file);
     }
     return name;
+#endif
 }
 
 void ReportProducer(const char* what, u32 other, const char* other_where, const char* where) {
     if (producer_reports.fetch_add(1, std::memory_order_relaxed) >= 8) {
         return;
     }
-    const u32 self = u32(gettid());
+    const u32 self = BbPlatform::CurrentThreadId();
     std::fprintf(stderr,
                  "Scheduler: %s: thread %u (%s) entering %s while thread %u (%s) is in %s\n",
                  what, self, ThreadName(self).c_str(), where, other, ThreadName(other).c_str(),
                  other_where ? other_where : "?");
     void* frames[24];
+#ifdef _WIN32
+    const int depth = BbPlatform::Backtrace(frames, 24);
+    for (int i = 0; i < depth; ++i) {
+        char where[160];
+        BbPlatform::DescribeAddress(frames[i], where, sizeof(where));
+        std::fprintf(stderr, "  #%d %s\n", i, where);
+    }
+#else
     const int depth = backtrace(frames, 24);
     backtrace_symbols_fd(frames, depth, 2);
+#endif
 }
 } // namespace
 
 void Scheduler::ProducerScope::Enter(const char* where) noexcept {
     previous_where = producer_scope_where;
-    static thread_local const u32 tid = u32(gettid());
+    static thread_local const u32 tid = BbPlatform::CurrentThreadId();
     producer_scope_where = where;
     u32 expected = 0;
     if (scheduler.producer_tid.compare_exchange_strong(expected, tid,
@@ -287,6 +304,13 @@ void Scheduler::TraceDirectRecording(void* caller) {
     }
     std::ranges::sort(top, std::greater{});
     for (size_t i = 0; i < std::min<size_t>(top.size(), 8); ++i) {
+#ifdef _WIN32
+        char where[512];
+        BbPlatform::DescribeAddress(top[i].second, where, sizeof(where));
+        std::printf("Recorder sync caller: %llu x %s\n",
+                    static_cast<unsigned long long>(top[i].first), where);
+        continue;
+#else
         Dl_info info{};
         dladdr(top[i].second, &info);
         std::printf("Recorder sync caller: %llu x %s+0x%lx\n",
@@ -294,6 +318,7 @@ void Scheduler::TraceDirectRecording(void* caller) {
                     info.dli_fname ? info.dli_fname : "?",
                     static_cast<unsigned long>(reinterpret_cast<uintptr_t>(top[i].second) -
                                                reinterpret_cast<uintptr_t>(info.dli_fbase)));
+#endif
     }
     callers.clear();
 }
@@ -481,7 +506,7 @@ void Scheduler::HandOver() {
         inside && (std::strcmp(inside, "Record") == 0 || std::strcmp(inside, "RecordData") == 0 ||
                    std::strcmp(inside, "RecordOrdered") == 0 ||
                    std::strcmp(inside, "RetireChunk") == 0)) {
-        ReportProducer("REENTERED recording", u32(gettid()), inside, "HandOver");
+        ReportProducer("REENTERED recording", BbPlatform::CurrentThreadId(), inside, "HandOver");
     }
     ProducerScope producer{*this, "HandOver"};
     if (!record_chunk || !ordered_chunk) {

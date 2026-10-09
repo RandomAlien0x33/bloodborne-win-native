@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <thread>
+#include "bbport_platform.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -22,6 +24,17 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 
 // DejaVu Sans (Cyrillic), embedded (third_party/fonts, Bitstream Vera license).
+#ifdef _WIN32
+// PE/COFF assemblers have no .hidden/.previous: the compiler embeds the file (#embed, a GCC
+// extension in C++).
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+alignas(16) static const unsigned char bb_font_ttf[] = {
+#embed BB_FONT_PATH
+};
+#pragma GCC diagnostic pop
+static const unsigned char* const bb_font_ttf_end = bb_font_ttf + sizeof(bb_font_ttf);
+#else
 asm(".section .rodata\n"
     ".balign 16\n"
     ".hidden bb_font_ttf\n"
@@ -34,7 +47,17 @@ asm(".section .rodata\n"
     ".previous\n");
 extern "C" const unsigned char bb_font_ttf[];
 extern "C" const unsigned char bb_font_ttf_end[];
+#endif
 // DejaVu Serif (same license): the settings menu, styled like the game's own menus.
+#ifdef _WIN32
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+alignas(16) static const unsigned char bb_serif_ttf[] = {
+#embed BB_SERIF_FONT_PATH
+};
+#pragma GCC diagnostic pop
+static const unsigned char* const bb_serif_ttf_end = bb_serif_ttf + sizeof(bb_serif_ttf);
+#else
 asm(".section .rodata\n"
     ".balign 16\n"
     ".hidden bb_serif_ttf\n"
@@ -47,6 +70,7 @@ asm(".section .rodata\n"
     ".previous\n");
 extern "C" const unsigned char bb_serif_ttf[];
 extern "C" const unsigned char bb_serif_ttf_end[];
+#endif
 
 extern "C" void runtime_restart(void); // bb-probe (probe.c)
 
@@ -159,14 +183,18 @@ void Store(std::atomic<T>& target, T value, bool changed) {
     }
 }
 
+// bbport: the widget runs before Store reads v: argument evaluation order is unspecified (clang
+// on Windows copied v before the widget changed it, so clicks stored the old value).
 void Checkbox(const char* label, std::atomic<bool>& value) {
     bool v = value;
-    Store(value, v, ImGui::Checkbox(label, &v));
+    const bool changed = ImGui::Checkbox(label, &v);
+    Store(value, v, changed);
 }
 
 void Slider(const char* label, std::atomic<float>& value, float lo, float hi) {
     float v = value;
-    Store(value, v, ImGui::SliderFloat(label, &v, lo, hi, "%.2f"));
+    const bool changed = ImGui::SliderFloat(label, &v, lo, hi, "%.2f");
+    Store(value, v, changed);
 }
 
 void Hint(const char* text) {
@@ -398,6 +426,7 @@ void SliderRow(const char* id, const char* label, std::atomic<float>& value, flo
 bool RestartNeeded() {
     auto& s = BbSettings::Get();
     bool restart = s.object_motion != s.startup_object_motion || s.model_lod != s.startup_model_lod ||
+                   s.memory_model != s.startup_memory_model ||
                    s.live_resolution != s.startup_live_resolution ||
                    BbSettings::ResolutionNeedsRestart();
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
@@ -564,6 +593,26 @@ void EffectsTab() {
            T("Level of detail of models (game patch). Applies after restarting the game.",
              "Детализация моделей (патч игры). Применяется после перезапуска игры."),
            true, [&](int i) { Store(s.model_lod, lod_values[i], true); });
+    const char* memory[] = {T("Classic", "Классический"), T("Hybrid", "Гибрид"),
+                            T("Integrated GPU", "Встроенная графика")};
+    int memory_index = std::clamp(s.memory_model.load(), 0, BbSettings::MemoryModelCount - 1);
+    // Integrated GPU (direct) on an integrated GPU only, or when bbport.ini has it already.
+    const int memory_count = s.integrated_gpu || s.memory_model == BbSettings::MemoryDirect
+                                 ? BbSettings::MemoryModelCount
+                                 : BbSettings::MemoryDirect;
+    Choice("memory", T("Memory mode", "Режим памяти"), memory_index, memory_count,
+           [&](int i) { return memory[i]; }, [](int) { return true; },
+           T("How the GPU works with the game's memory. Classic: copies, the most tested. Hybrid: "
+             "shared memory, faster; if the game crashes, choose Classic. Integrated GPU: no copies at all; "
+             "can help integrated graphics "
+             "(laptops without a graphics card, Steam Deck), much slower on discrete cards. "
+             "Applies after restarting the game.",
+             "Как видеокарта работает с памятью игры. Классический: копии, самый проверенный. Гибрид: "
+             "общая память, быстрее; если игра вылетает, выберите Классический. Встроенная графика: "
+             "совсем без копий; может помочь встроенной "
+             "графике (ноутбуки без видеокарты, Steam Deck), на дискретных картах намного медленнее. "
+             "Применяется после перезапуска игры."),
+           true, [&](int i) { Store(s.memory_model, i, true); });
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         const auto& effect = BbSettings::Effects[e];
         const char* hint =
@@ -851,14 +900,46 @@ void FpsCounter() {
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                      ImGuiWindowFlags_NoFocusOnAppearing);
     const auto& s = BbSettings::Get();
-    ImGui::Text(BbSettings::MenuText("%.0f FPS  %.1f ms  %s", "%.0f FPS  %.1f мс  %s"),
-                frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f, frame_ms_avg,
+    // bbport: short and always in English (the owner's choice); no frame time.
+    ImGui::Text("%.0f FPS  %s", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
                 s.upscaler == BbSettings::UpscalerFsr3     ? "FSR 3.1"
                 : s.upscaler == BbSettings::UpscalerFsr4   ? "FSR 4"
                 : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
                 : s.upscaler == BbSettings::UpscalerTaa    ? "TAA"
                 : s.upscaler == BbSettings::UpscalerDlss   ? "DLSS"
                                                            : "");
+    // bbport: memory, refreshed once a second: the GPU memory the game uses of what the driver
+    // gives it, and the game's RAM (working set).
+    static std::chrono::steady_clock::time_point memory_time{};
+    static double vram_gb = 0.0, budget_gb = 0.0, ram_gb = 0.0, cpu_percent = 0.0;
+    static std::uint64_t cpu_us_before = 0;
+    if (const auto now = std::chrono::steady_clock::now(); now - memory_time >= std::chrono::seconds(1)) {
+        // The process's CPU time over the last second, as a share of all hardware threads (as
+        // Task Manager shows it): one GetProcessTimes/getrusage call a second.
+        if (BbPlatform::Usage usage; BbPlatform::GetUsage(false, usage)) {
+            const std::uint64_t cpu_us = usage.user_us + usage.sys_us;
+            const double wall_us =
+                std::chrono::duration<double, std::micro>(now - memory_time).count();
+            const unsigned threads = std::max(1u, std::thread::hardware_concurrency());
+            if (cpu_us_before != 0 && wall_us > 0.0 && wall_us < 5e6) {
+                cpu_percent = 100.0 * double(cpu_us - cpu_us_before) / (wall_us * threads);
+            }
+            cpu_us_before = cpu_us;
+        }
+        memory_time = now;
+        vram_gb = double(BbStats::vram_used_bytes.load(std::memory_order_relaxed)) / double(1ull << 30);
+        budget_gb = double(BbStats::vram_budget_bytes.load(std::memory_order_relaxed)) / double(1ull << 30);
+        std::uint64_t resident = 0, committed = 0;
+        if (BbPlatform::ProcessMemory(resident, committed)) {
+            ram_gb = double(resident) / double(1ull << 30);
+        }
+    }
+    if (budget_gb > 0.0) {
+        ImGui::Text("CPU %.0f%%  VRAM %.1f/%.1f GB  RAM %.1f GB", cpu_percent, vram_gb, budget_gb,
+                    ram_gb);
+    } else {
+        ImGui::Text("CPU %.0f%%  RAM %.1f GB", cpu_percent, ram_gb);
+    }
     ImGui::End();
 }
 

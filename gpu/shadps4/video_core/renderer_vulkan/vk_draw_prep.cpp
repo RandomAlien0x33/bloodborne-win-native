@@ -12,6 +12,7 @@
 #include "common/thread.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/amdgpu/pm4_cmds.h"
+#include "video_core/amdgpu/pm4_resync.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include <xxhash.h>
@@ -36,7 +37,10 @@ void ForEachPacket(std::span<const u32> commands, Func&& func) {
             continue;
         }
         if (header->type != 3) {
-            return;
+            // bbport: an invalid header is stepped over exactly as the GPU thread does, so both
+            // register states stay equal (pm4_resync.h).
+            at += AmdGpu::ResyncSkip(commands.subspan(at));
+            continue;
         }
         const size_t words = header->type3.NumWords() + 1;
         if (at + words > commands.size()) {

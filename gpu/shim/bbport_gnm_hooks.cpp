@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_gnm_hooks.h"
+// bbport (Windows): a Linux-only diagnostic (signals, /proc, process_vm_readv, dma-buf or
+// mprotect traps); off unless its variables are set. Windows builds the inert API below.
+#ifndef _WIN32
 
 #include <algorithm>
 #include <initializer_list>
@@ -614,3 +617,11 @@ DriverWrite::~DriverWrite() {
     Mark(std::uint32_t(Count), begin, end);
 }
 } // namespace BbGnmHooks
+#else
+#include <cstdint>
+namespace BbGnmHooks {
+void PatchImage(unsigned char*, std::uint64_t) {}
+void CheckSubmission(const std::uint32_t*, std::uint64_t) {}
+DriverWrite::~DriverWrite() = default;
+} // namespace BbGnmHooks
+#endif

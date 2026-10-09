@@ -216,6 +216,11 @@ struct Info : InfoPersistent {
             std::memcpy(&base, &ud[ptr_index], sizeof(base));
             base = reinterpret_cast<const u32*>(VAddr(base) & 0xFFFFFFFFFFFFULL);
         }
+        // bbport: an unbound descriptor table reads as an empty sharp (from parsifal295's fix in
+        // Mrsuss60/bloodborne_pc_windows_port: a crash while a map loaded).
+        if (!base) {
+            return T{};
+        }
         std::memcpy(&data, base + dword_offset, sizeof(T));
         return data;
     }

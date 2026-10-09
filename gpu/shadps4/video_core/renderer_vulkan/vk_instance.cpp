@@ -105,7 +105,8 @@ Instance::Instance(s32 index, bool validation)
 
 Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_device_index,
                    bool enable_validation, bool enable_crash_diagnostic)
-    : instance{CreateInstance(window_info.type, enable_validation, enable_crash_diagnostic)},
+    : instance{CreateInstance(window_info.type, enable_validation, enable_crash_diagnostic,
+                              physical_device_index)},
       physical_devices{EnumeratePhysicalDevices(instance)} {
     if (enable_validation) {
         debug_callback = CreateDebugCallback(*instance);
@@ -317,6 +318,8 @@ bool Instance::CreateDevice() {
             add_extension(VK_KHR_FRAGMENT_SHADER_BARYCENTRIC_EXTENSION_NAME);
     }
     provoking_vertex = add_extension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME);
+    // bbport: where the GPU faulted when the device is lost (breadcrumbs report it).
+    device_fault = add_extension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME);
     shader_stencil_export = add_extension(VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);
     image_load_store_lod = add_extension(VK_AMD_SHADER_IMAGE_LOAD_STORE_LOD_EXTENSION_NAME);
     amd_gcn_shader = add_extension(VK_AMD_GCN_SHADER_EXTENSION_NAME);
@@ -359,10 +362,17 @@ bool Instance::CreateDevice() {
     image_view_min_lod = add_extension(VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
     supports_memory_budget = add_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     // bbport: guest direct memory allocated here and mapped by the runtime (BbGuestMemory).
+#ifdef _WIN32
+    // bbport: the guest's direct memory is imported in place from the pool section's backing
+    // view (bbport_guest_memory.cpp) instead of being exported as a dma-buf.
+    guest_memory_import = host_memory_import =
+        add_extension(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+#else
     guest_memory_export = add_extension(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME) &&
                           add_extension(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
     // bbport: or host memory imported into Vulkan (drivers whose dma-buf does not fit, NVIDIA).
     host_memory_import = add_extension(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+#endif
     // bbport: FSR 4 v07 INT8 (vk_temporal_upscaler): quad derivatives in compute shaders.
     compute_shader_derivatives = add_extension(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
     // bbport: FSR 4.1.1 passes (dot2 of halves accumulated in float, as vkd3d-proton translates them).
@@ -383,6 +393,11 @@ bool Instance::CreateDevice() {
         compute_shader_derivatives_features =
             feature_chain.get<vk::PhysicalDeviceComputeShaderDerivativesFeaturesKHR>();
     }
+    // bbport: NVIDIA NGX (DLSS) needs these besides push descriptors and buffer device address
+    // (NVSDK_NGX_VULKAN_RequiredExtensions); only NVIDIA drivers expose them.
+    const bool nvx_binary_import = add_extension(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
+    dlss_extensions =
+        add_extension(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME) && nvx_binary_import;
     shader_clock = add_extension(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
     if (shader_clock) {
         shader_clock_features = feature_chain.get<vk::PhysicalDeviceShaderClockFeaturesKHR>();
@@ -561,6 +576,9 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceFragmentShaderBarycentricFeaturesKHR{
             .fragmentShaderBarycentric = true,
         },
+        vk::PhysicalDeviceFaultFeaturesEXT{
+            .deviceFault = true,
+        },
         vk::PhysicalDeviceProvokingVertexFeaturesEXT{
             .provokingVertexLast = true,
         },
@@ -624,6 +642,9 @@ bool Instance::CreateDevice() {
 
     if (!custom_border_color) {
         device_chain.unlink<vk::PhysicalDeviceCustomBorderColorFeaturesEXT>();
+    }
+    if (!device_fault) {
+        device_chain.unlink<vk::PhysicalDeviceFaultFeaturesEXT>();
     }
     if (!dynamic_state_3) {
         device_chain.unlink<vk::PhysicalDeviceExtendedDynamicState3FeaturesEXT>();

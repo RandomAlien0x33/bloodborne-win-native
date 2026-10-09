@@ -90,6 +90,15 @@ void* FindSymbol(Module module, const char* name) {
 }
 #endif
 
+/// bbport BB_DLSS_BRIDGE_DIR: a folder with the DLSS bridge to use (an A/B of
+/// bridges); NVIDIA's library stays the one next to bb-probe.
+std::filesystem::path BridgeDirectory() {
+    if (const char* dir = std::getenv("BB_DLSS_BRIDGE_DIR"); dir && dir[0]) {
+        return std::filesystem::path{dir};
+    }
+    return ExecutableDirectory();
+}
+
 void BridgeLog(int warning, const char* message) {
     std::printf("DLSS: %s%s\n", warning ? "warning: " : "", message);
 }
@@ -141,7 +150,7 @@ Dlss* Dlss::Get() {
             return nullptr;
         }
         const auto directory = ExecutableDirectory();
-        if (!std::filesystem::is_regular_file(directory / BridgeName) || !HasNgx(directory)) {
+        if (!std::filesystem::is_regular_file(BridgeDirectory() / BridgeName) || !HasNgx(directory)) {
             return nullptr;
         }
         auto* created = new Dlss;
@@ -158,7 +167,8 @@ Dlss* Dlss::Get() {
 
 Dlss::Dlss() : impl{std::make_unique<Impl>()} {
     const auto directory = ExecutableDirectory();
-    impl->module = LoadModule(directory / BridgeName);
+    impl->module = LoadModule(BridgeDirectory() / BridgeName);
+    std::printf("DLSS: bridge %s\n", (BridgeDirectory() / BridgeName).string().c_str());
     const auto get_api =
         impl->module ? reinterpret_cast<BbDlssGetApiFn>(FindSymbol(impl->module, "BbDlssGetApi"))
                      : nullptr;

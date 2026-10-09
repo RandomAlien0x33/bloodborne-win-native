@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
+#include <climits>
 #include "gnm_error.h"
 #include "gnmdriver.h"
 
@@ -149,8 +151,13 @@ static u32 SubmitsAhead() {
     return overlap_off ? 0u : ahead;
 }
 // Once a frame: the game's live heap allocations (malloc minus free, counted by wrappers on its
-// malloc) are watched; the leak added ~1800 a second, so 100000 over the lowest count seen is
-// taken as one (or the heap asking for more memory). Then the frames stop overlapping.
+// malloc) are watched; the leak added ~1800 a second. Then the frames stop overlapping.
+// bbport: a leak is steady growth, an area load a step that then stays. The rule was "100000 over
+// the lowest count of the first 600 frames": every area load after those 10 s tripped it (warping
+// to a lamp: 100019 over 141704) and the frames stopped overlapping for the session (70-80 -> 50
+// FPS with the PC memory model). Now the lowest count of each minute is kept, and the overlap ends
+// when it grew by more than LeakPerMinute two minutes in a row (the leak: ~108000 a minute); a
+// load raises it once. The heap asking for more memory (mmap) still ends it at once.
 static void WatchOverlapLeak() {
     if (SubmitsAhead() == 0) {
         return;
@@ -159,18 +166,29 @@ static void WatchOverlapLeak() {
         BbHeapSites::InstallCounters();
         return;
     }
-    static u64 frames = 0;
-    static long long lowest = 0;
+    constexpr long long LeakPerMinute = 40000;
+    static auto minute_start = std::chrono::steady_clock::now();
+    static long long minute_lowest = LLONG_MAX;
+    static long long previous[2] = {-1, -1}; // lowest of the minute before last, and of the last
     const long long live = BbHeapSites::LiveAllocations();
-    if (++frames < 600 || live < lowest) {
-        lowest = live; // warming up: area loads
-        return;
+    minute_lowest = std::min(minute_lowest, live);
+    bool leak = runtime_heap_growths() != 0;
+    if (const auto now = std::chrono::steady_clock::now();
+        now - minute_start >= std::chrono::minutes(1)) {
+        minute_start = now;
+        if (previous[0] >= 0 && previous[1] - previous[0] > LeakPerMinute &&
+            minute_lowest - previous[1] > LeakPerMinute) {
+            leak = true;
+        }
+        previous[0] = previous[1];
+        previous[1] = minute_lowest;
+        minute_lowest = LLONG_MAX;
     }
-    if (live - lowest > 100000 || runtime_heap_growths() != 0) {
+    if (leak) {
         overlap_off = true;
-        std::printf("Gnm: the game's heap grows (%lld allocations over %lld): frames no longer "
-                    "overlap (BB_SUBMIT_AHEAD 0)\n",
-                    live - lowest, lowest);
+        std::printf("Gnm: the game's heap grows (live allocations %lld, lowest of the last minutes "
+                    "%lld, %lld; heap growths %llu): frames no longer overlap (BB_SUBMIT_AHEAD 0)\n",
+                    live, previous[0], previous[1], (unsigned long long)runtime_heap_growths());
     }
 }
 static void WaitPreviousFrameAtSubmit() {

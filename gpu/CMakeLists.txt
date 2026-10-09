@@ -43,15 +43,54 @@ endif()
 find_package(Vulkan REQUIRED)
 find_package(fmt REQUIRED)
 find_package(Boost REQUIRED)
-find_package(magic_enum REQUIRED)
 find_package(tsl-robin-map REQUIRED)
-find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(XXHASH REQUIRED IMPORTED_TARGET libxxhash)
 pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
-pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
-find_package(miniz REQUIRED)
 find_package(Zydis REQUIRED)
+if (WIN32)
+    # bbport: Windows (MSYS2 MINGW64). bbgpu is a static library linked into bb-probe.exe
+    # (a DLL cannot leave the runtime_* symbols undefined). Packages MSYS2 does not ship
+    # (magic_enum, miniz, xbyak) are fetched; VMA is header-only there.
+    include(FetchContent)
+    find_package(magic_enum QUIET)
+    if (NOT TARGET magic_enum::magic_enum)
+        FetchContent_Declare(magic_enum GIT_REPOSITORY https://github.com/Neargye/magic_enum.git
+            GIT_TAG v0.9.7 GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(magic_enum)
+    endif()
+    find_package(miniz QUIET)
+    if (NOT TARGET miniz::miniz)
+        set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(BUILD_FUZZERS OFF CACHE BOOL "" FORCE)
+        set(BUILD_NO_STDIO OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(miniz GIT_REPOSITORY https://github.com/richgel999/miniz.git
+            GIT_TAG 3.1.0 GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(miniz)
+        if (NOT TARGET miniz::miniz)
+            add_library(miniz::miniz ALIAS miniz)
+        endif()
+    endif()
+    find_package(xbyak QUIET)
+    if (NOT TARGET xbyak::xbyak)
+        FetchContent_Declare(xbyak GIT_REPOSITORY https://github.com/herumi/xbyak.git
+            GIT_TAG v7.24.2 GIT_SHALLOW TRUE)
+        FetchContent_MakeAvailable(xbyak)
+    endif()
+    find_package(VulkanMemoryAllocator CONFIG QUIET)
+    if (NOT TARGET GPUOpen::VulkanMemoryAllocator)
+        find_path(VMA_INCLUDE_DIR vk_mem_alloc.h PATH_SUFFIXES vma REQUIRED)
+        add_library(GPUOpen::VulkanMemoryAllocator INTERFACE IMPORTED)
+        set_target_properties(GPUOpen::VulkanMemoryAllocator PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES ${VMA_INCLUDE_DIR})
+    endif()
+else()
+    find_package(magic_enum REQUIRED)
+    find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+    pkg_check_modules(X11 REQUIRED IMPORTED_TARGET x11)
+    find_package(miniz REQUIRED)
+endif()
 find_program(GLSLANG_COMPILER NAMES glslang glslangValidator REQUIRED)
 
 set(SIRIT_USE_SYSTEM_SPIRV_HEADERS OFF CACHE BOOL "" FORCE)
@@ -61,6 +100,19 @@ add_subdirectory(third_party/sirit EXCLUDE_FROM_ALL)
 set(FFX_VK_PORTABLE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(FFX_VK_PORTABLE_BUILD_PROBE OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/fsr-vulkan EXCLUDE_FROM_ALL)
+if (WIN32)
+    # AMD's FidelityFX sources rely on MSVC's transitive includes (memset, floor, placement new,
+    # swprintf_s) on _WIN32.
+    foreach(ffx_target IN ITEMS ffx_vulkan_portable ffx_vulkan_fsr3_vk_backend_1_1_4
+            ffx_vulkan_fsr3_host_1_1_4 ffx_vulkan_fsr4_v07_vulkan ffx_vulkan_fsr4_v07_assets)
+        if (TARGET ${ffx_target})
+            target_compile_options(${ffx_target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdio>"
+                "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cwchar>" "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstring>"
+                "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cmath>" "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include new>"
+                "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include mutex>")
+        endif()
+    endforeach()
+endif()
 
 # Host shaders -> headers (same scheme as shadPS4's host_shaders/CMakeLists.txt).
 set(SHADER_SRC ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/host_shaders)
@@ -121,7 +173,12 @@ set(COMMON
 file(GLOB AVPLAYER CONFIGURE_DEPENDS shadps4/core/libraries/avplayer/*.cpp)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavformat libavcodec libavutil libswscale libswresample)
 file(GLOB SHIM_SOURCES CONFIGURE_DEPENDS shim/*.cpp shim/*/*.cpp)
-add_library(bbgpu SHARED ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES}
+if (WIN32)
+    set(BBGPU_LIBRARY_TYPE STATIC)
+else()
+    set(BBGPU_LIBRARY_TYPE SHARED)
+endif()
+add_library(bbgpu ${BBGPU_LIBRARY_TYPE} ${VIDEO_CORE} ${RECOMPILER} ${COMMON} ${SHIM_SOURCES}
     shadps4/core/libraries/gnmdriver/gnmdriver.cpp
     shadps4/core/libraries/videoout/driver.cpp shadps4/core/libraries/videoout/video_out.cpp
     shadps4/core/libraries/kernel/equeue.cpp ${AVPLAYER}
@@ -141,14 +198,26 @@ set_source_files_properties(shim/bbport_overlay.cpp PROPERTIES
 target_include_directories(bbgpu PRIVATE shim shadps4 ${SHADER_INCLUDE} third_party/gcn/include third_party/half/include)
 target_compile_definitions(bbgpu PRIVATE BOOST_ASIO_STANDALONE NDEBUG)
 target_compile_options(bbgpu PRIVATE -Wno-deprecated-declarations -Wno-missing-field-initializers)
-# Loaded with bb-probe at startup (DT_NEEDED, never dlopen): thread_local access without a
-# TLS descriptor call (_dl_tlsdesc_return was ~2% of the draw recording thread).
-target_compile_options(bbgpu PRIVATE -ftls-model=initial-exec)
-# Runtime symbols (runtime_memory_*, runtime_process_*) resolve against bb-probe.
-target_link_options(bbgpu PRIVATE -Wl,--allow-shlib-undefined)
+
 target_link_libraries(bbgpu PRIVATE ffx-vulkan::portable ffx-vulkan::fsr4-v07-vulkan)
 target_link_libraries(bbgpu PUBLIC Vulkan::Headers fmt::fmt Boost::headers magic_enum::magic_enum
-    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::X11 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit)
+    tsl::robin_map GPUOpen::VulkanMemoryAllocator PkgConfig::XXHASH PkgConfig::SDL3 PkgConfig::FFMPEG miniz::miniz Zydis::Zydis sirit)
+if (WIN32)
+    # Windows headers: no min/max macros, no winsock 1 clash; Windows 10+ APIs (SetThreadDescription).
+    target_compile_definitions(bbgpu PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+    target_link_libraries(bbgpu PUBLIC xbyak::xbyak)
+    # bb-probe.exe links libbbgpu.a with these (out/gpu/bbgpu_link.txt, one argument per line,
+    # in link order): the static library's transitive dependencies.
+    include(cmake/LinkClosure.cmake)
+    bb_write_link_closure(bbgpu ${CMAKE_CURRENT_BINARY_DIR}/bbgpu_link.txt)
+else()
+    # Loaded with bb-probe at startup (DT_NEEDED, never dlopen): thread_local access without a
+    # TLS descriptor call (_dl_tlsdesc_return was ~2% of the draw recording thread).
+    target_compile_options(bbgpu PRIVATE -ftls-model=initial-exec)
+    # Runtime symbols (runtime_memory_*, runtime_process_*) resolve against bb-probe.
+    target_link_options(bbgpu PRIVATE -Wl,--allow-shlib-undefined)
+    target_link_libraries(bbgpu PUBLIC PkgConfig::X11)
+endif()
 
 # Explicit test targets; neither launches the game nor needs a Vulkan device.
 add_executable(motion-history-test EXCLUDE_FROM_ALL ../tests/test_motion_history.cpp)

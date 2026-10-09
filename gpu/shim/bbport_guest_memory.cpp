@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_guest_memory.h"
+// bbport (Windows): a Linux-only diagnostic (signals, /proc, process_vm_readv, dma-buf or
+// mprotect traps); off unless its variables are set. Windows builds the inert API below.
+#ifndef _WIN32
 
 #include <array>
 #include <chrono>
@@ -643,3 +646,205 @@ const Chunk* Find(std::uint64_t phys) {
     return phys < c->phys + c->size ? c : nullptr;
 }
 } // namespace BbGuestMemory
+#else
+// bbport (Windows): the PC memory model's GPU-visible guest memory. Direct memory lives in the
+// runtime's pool section; chunks of it the game allocates in are imported as Vulkan memory in
+// place (VK_EXT_external_memory_host, from the section's backing view), so the GPU reads the
+// game's data where it is, with no copy and no dma-buf. Works on NVIDIA and AMD drivers.
+#include <array>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <mutex>
+#include "video_core/renderer_vulkan/vk_instance.h"
+
+extern "C" void runtime_memory_set_guest_chunk_allocator(int (*alloc)(uint64_t phys,
+                                                                      uint64_t size));
+extern "C" void* runtime_memory_backing_view(uint64_t phys);
+
+namespace BbGuestMemory {
+namespace {
+using u64 = std::uint64_t;
+constexpr std::size_t MaxChunks = 256;
+
+vk::Device device;
+vk::PhysicalDeviceMemoryProperties memory_properties;
+std::mutex mutex;
+std::array<Chunk*, MaxChunks> chunks{}; // sorted by phys
+std::size_t chunk_count = 0;
+std::atomic<u64> chunk_bytes{0};
+
+/// Of the types that can import this pointer: host visible and cached, not device local.
+std::uint32_t FindType(std::uint32_t bits) {
+    const auto visible = vk::MemoryPropertyFlagBits::eHostVisible;
+    const auto cached = vk::MemoryPropertyFlagBits::eHostCached;
+    std::uint32_t fallback = ~0u;
+    for (std::uint32_t i = 0; i < memory_properties.memoryTypeCount; ++i) {
+        const auto flags = memory_properties.memoryTypes[i].propertyFlags;
+        if (!(bits & (1u << i)) || !(flags & visible) ||
+            (flags & vk::MemoryPropertyFlagBits::eDeviceLocal)) {
+            continue;
+        }
+        if (flags & cached) {
+            return i;
+        }
+        if (fallback == ~0u) {
+            fallback = i;
+        }
+    }
+    return fallback;
+}
+
+/// The runtime's chunk offer: imports [phys, phys+size) of the backing view; 0, or -1.
+int ImportChunk(u64 phys, u64 size) {
+    {
+        std::scoped_lock lk{mutex};
+        if (chunk_count == MaxChunks) {
+            return -1;
+        }
+    }
+    static std::atomic<int> failures{0};
+    const auto fail = [&](const char* what, vk::Result result) {
+        if (failures.fetch_add(1) < 4) {
+            std::fprintf(stderr, "Guest memory: %s failed (%s); chunk %#llx stays CPU-only\n",
+                         what, vk::to_string(result).c_str(), (unsigned long long)phys);
+        }
+        return -1;
+    };
+    void* host = runtime_memory_backing_view(phys);
+    if (!host) {
+        return fail("finding the backing view", vk::Result::eErrorInitializationFailed);
+    }
+    const vk::ExternalMemoryBufferCreateInfo external{
+        .handleTypes = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+    };
+    const auto [buffer_result, buffer] = device.createBuffer({
+        .pNext = &external,
+        .size = size,
+        .usage = vk::BufferUsageFlagBits::eTransferSrc | vk::BufferUsageFlagBits::eTransferDst |
+                 vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eUniformBuffer |
+                 vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eIndexBuffer |
+                 vk::BufferUsageFlagBits::eIndirectBuffer,
+        .sharingMode = vk::SharingMode::eExclusive,
+    });
+    if (buffer_result != vk::Result::eSuccess) {
+        return fail("buffer creation", buffer_result);
+    }
+    const auto requirements = device.getBufferMemoryRequirements(buffer);
+    vk::MemoryHostPointerPropertiesEXT pointer_props{};
+    if (const auto result = device.getMemoryHostPointerPropertiesEXT(
+            vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT, host, &pointer_props);
+        result != vk::Result::eSuccess) {
+        device.destroyBuffer(buffer);
+        return fail("querying the host pointer", result);
+    }
+    const std::uint32_t type = FindType(requirements.memoryTypeBits & pointer_props.memoryTypeBits);
+    if (type == ~0u || requirements.size > size) {
+        device.destroyBuffer(buffer);
+        return fail("finding an importable system memory type", vk::Result::eErrorFeatureNotPresent);
+    }
+    const vk::ImportMemoryHostPointerInfoEXT import_info{
+        .handleType = vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT,
+        .pHostPointer = host,
+    };
+    const auto [memory_result, memory] = device.allocateMemory({
+        .pNext = &import_info,
+        .allocationSize = size,
+        .memoryTypeIndex = type,
+    });
+    if (memory_result != vk::Result::eSuccess) {
+        device.destroyBuffer(buffer);
+        return fail("import", memory_result);
+    }
+    if (const auto result = device.bindBufferMemory(buffer, memory, 0);
+        result != vk::Result::eSuccess) {
+        device.freeMemory(memory);
+        device.destroyBuffer(buffer);
+        return fail("binding", result);
+    }
+    {
+        std::scoped_lock lk{mutex};
+        std::size_t i = chunk_count++;
+        for (; i > 0 && chunks[i - 1]->phys > phys; --i) {
+            chunks[i] = chunks[i - 1];
+        }
+        static std::uint32_t next_index = 0;
+        chunks[i] = new Chunk{phys, size, buffer, memory, next_index++};
+    }
+    const u64 total = chunk_bytes.fetch_add(size) + size;
+    std::printf("Guest memory: direct memory %#llx+%llu MiB imported in place (memory type %u), "
+                "%llu MiB so far\n",
+                (unsigned long long)phys, (unsigned long long)(size >> 20), type,
+                (unsigned long long)(total >> 20));
+    return 0;
+}
+} // namespace
+
+bool PcModelGpu(const Vulkan::Instance& instance) {
+    static const bool ok = [&] {
+        constexpr std::uint32_t AmdVendor = 0x1002;
+        const std::uint32_t vendor = instance.GetVendorID();
+        const char* any = std::getenv("BB_PC_MODEL_ANY_GPU");
+        if (vendor == AmdVendor || (any && any[0] == '1')) {
+            return true;
+        }
+        std::printf("Guest memory: the new memory model is tested on AMD GPUs only; this GPU "
+                    "(vendor 0x%04x) uses the model of 0.3 (BB_PC_MODEL_ANY_GPU=1: try it)\n",
+                    vendor);
+        return false;
+    }();
+    return ok;
+}
+
+bool Usable(const Vulkan::Instance& instance) {
+    static const bool usable = [&] {
+        if (!instance.IsGuestMemoryImportSupported()) {
+            std::printf("Guest memory: the driver cannot import host memory "
+                        "(VK_EXT_external_memory_host)\n");
+            return false;
+        }
+        return true;
+    }();
+    return usable;
+}
+
+void Install(const Vulkan::Instance& instance) {
+    const char* env = std::getenv("BB_GUEST_GPU_MEMORY");
+    const char* in_place = std::getenv("BB_GUEST_IN_PLACE");
+    if (!(env && env[0] == '1') && !(in_place && in_place[0] == '1' && PcModelGpu(instance))) {
+        return;
+    }
+    if (!Usable(instance)) {
+        std::printf("Guest memory: direct memory stays CPU-only\n");
+        return;
+    }
+    device = instance.GetDevice();
+    memory_properties = instance.GetPhysicalDevice().getMemoryProperties();
+    runtime_memory_set_guest_chunk_allocator(&ImportChunk);
+    std::printf("Guest memory: direct memory chunks are imported in place "
+                "(VK_EXT_external_memory_host)\n");
+}
+
+vk::ExternalMemoryHandleTypeFlagBits HandleType() {
+    return vk::ExternalMemoryHandleTypeFlagBits::eHostAllocationEXT; // always imported on Windows
+}
+
+const Chunk* Find(std::uint64_t phys) {
+    std::scoped_lock lk{mutex};
+    std::size_t lo = 0, hi = chunk_count;
+    while (lo < hi) {
+        const std::size_t mid = (lo + hi) / 2;
+        if (chunks[mid]->phys <= phys) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo == 0) {
+        return nullptr;
+    }
+    const Chunk* c = chunks[lo - 1];
+    return phys < c->phys + c->size ? c : nullptr;
+}
+} // namespace BbGuestMemory
+#endif

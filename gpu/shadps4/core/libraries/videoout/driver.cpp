@@ -7,11 +7,13 @@
 #include <chrono>
 #include <cstdio>
 #include <time.h>
-#include <sys/resource.h>
 #include <cstring>
+#ifndef _WIN32
 #include <dirent.h>
 #include <unistd.h>
+#endif
 #include "common/assert.h"
+#include "bbport_platform.h"
 #include "bbport_toggles.h"
 #include "bbport_heap_sites.h"
 #include "bbport_wait_trace.h"
@@ -303,6 +305,8 @@ int VideoOutDriver::ChangeBufferAttribute(VideoOutPort* port, s32 attributeIndex
 /// DRM clients, RSS) and the parts we know of. GTT holds the game's direct memory (fixed).
 static void PrintMemory() {
     u64 vram_kib = 0, gtt_kib = 0;
+    u64 rss = 0;
+#ifndef _WIN32 // bbport: the kernel's DRM and RSS counters are Linux's (/proc); 0 on Windows
     std::vector<u64> clients;
     if (DIR* dir = opendir("/proc/self/fdinfo")) {
         while (const dirent* entry = readdir(dir)) {
@@ -338,7 +342,14 @@ static void PrintMemory() {
         }
         std::fclose(statm);
     }
-    const u64 rss = u64(rss_pages) * u64(sysconf(_SC_PAGESIZE));
+    rss = u64(rss_pages) * u64(sysconf(_SC_PAGESIZE));
+#else
+    // bbport (Windows): the GPU memory heaps' usage (VK_EXT_memory_budget) and the working set.
+    vram_kib = BbStats::vram_used_bytes.load(std::memory_order_relaxed) >> 10;
+    if (u64 committed = 0; !BbPlatform::ProcessMemory(rss, committed)) {
+        rss = 0;
+    }
+#endif
     const u64 device = BbStats::device_alloc_bytes.load() - BbStats::device_free_bytes.load();
     u64 vma_blocks = 0, vma_used = 0;
     Vulkan::VmaDeviceUsage(vma_blocks, vma_used);
@@ -411,8 +422,8 @@ void VideoOutDriver::Flip(const Request& req) {
         last_twf = twf;
         const u64 copy_ns = BbStats::t_copy.load(), copy_bytes = BbStats::copy_bytes.load();
         u64 proc_flt = 0;
-        if (rusage usage{}; getrusage(RUSAGE_SELF, &usage) == 0) {
-            proc_flt = usage.ru_minflt;
+        if (BbPlatform::Usage usage; BbPlatform::GetUsage(false, usage)) {
+            proc_flt = usage.minor_faults;
         }
         const u64 t_now[6] = {BbStats::t_resident.load(), BbStats::t_protect.load(),
                               BbStats::t_image_create.load(), BbStats::t_refresh.load(),
@@ -424,9 +435,7 @@ void VideoOutDriver::Flip(const Request& req) {
                   vol = BbStats::gpu_vol_switches.load();
         u64 gpu_ns = 0;
         if (const int clock = BbStats::gpu_thread_clock.load(); clock != -1) {
-            timespec ts{};
-            clock_gettime(static_cast<clockid_t>(clock), &ts);
-            gpu_ns = u64(ts.tv_sec) * 1000000000ull + u64(ts.tv_nsec);
+            gpu_ns = BbPlatform::ReadThreadCpuClockNs(clock);
         }
         const u64 images = BbStats::images_registered.load();
         const u64 image_bytes = BbStats::image_upload_bytes.load();

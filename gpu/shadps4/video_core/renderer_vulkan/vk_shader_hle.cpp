@@ -276,13 +276,14 @@ bool ExecuteShaderHLE(const Shader::Info& info, const AmdGpu::Regs& regs,
             const char* env = std::getenv("BB_COPY_SHADER_NATIVE");
             return !env || env[0] != '0';
         }();
-        if (VideoCore::GuestInPlace() && native_env != BbToggle::Experiment(2)) {
+        if (VideoCore::GuestInPlace() && !VideoCore::HybridModel() &&
+            native_env != BbToggle::Experiment(2)) {
             return false;
         }
         // Its destinations stay in the game's memory, as when it runs as itself (see
         // Rasterizer::DispatchRecord): our translator reads what it copies there on the CPU.
         auto& buffer_cache = rasterizer.GetBufferCache();
-        buffer_cache.force_writes_in_place = true;
+        buffer_cache.force_writes_in_place = !VideoCore::HybridModel();
         const bool done = ExecuteCopyShaderHLE(info, cs_program, rasterizer);
         buffer_cache.force_writes_in_place = false;
         return done;
