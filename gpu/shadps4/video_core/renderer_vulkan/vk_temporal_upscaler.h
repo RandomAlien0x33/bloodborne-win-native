@@ -21,6 +21,7 @@
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
+#include "video_core/renderer_vulkan/vk_dlss_ngx.h"
 #include "video_core/renderer_vulkan/vk_fsr4.h"
 #include "video_core/texture_cache/image.h"
 
@@ -184,8 +185,9 @@ private:
     bool RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image color, Fsr4Upscaler::Image depth,
                     u32 w, u32 h, u32 ow, u32 oh, float frame_ms);
     void RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color, vk::ImageView depth);
-    /// Sharpness above 1 for FSR 3/4 (their RCAS stops at 1): one more RCAS pass over the target
-    /// (output_image, or the 8-bit UI image with ldr) in General layout after the upscaler.
+    /// Sharpness above 1 for FSR 3/4 (their RCAS stops at 1), all of it for DLSS (no sharpening
+    /// of its own): one more RCAS pass over the target (output_image, or the 8-bit UI image with
+    /// ldr) in General layout after the upscaler.
     void ExtraSharpen(vk::Image target, bool ldr, u32 w, u32 h);
 
     const Instance& instance;
@@ -262,6 +264,7 @@ private:
     bool resources_fsr4 = false;  ///< made for FSR 4 (no FSR 3 context)
     bool resources_taa = false;
     std::unique_ptr<Fsr4Upscaler> fsr4;
+    std::unique_ptr<DlssUpscaler> dlss; ///< NVIDIA devices only; records the FSR 4 frame
     bool fsr4_failed = false;
     bool dlss_failed = false;
     VideoCore::UniqueImage motion_image;

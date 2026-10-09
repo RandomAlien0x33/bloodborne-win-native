@@ -53,6 +53,11 @@ public:
         return vk13_features.subgroupSizeControl;
     }
 
+    /// Largest VkBuffer the driver allows (2 GiB on AMD's Windows driver).
+    u64 GetMaxBufferSize() const {
+        return vk13_props.maxBufferSize;
+    }
+
     vk::PhysicalDevice GetPhysicalDevice() const {
         return physical_device;
     }
@@ -99,6 +104,11 @@ public:
         return readback_family_index;
     }
     /// bbport: memory can be exported as a dma-buf (guest memory, BbGuestMemory).
+    /// bbport (Windows): VK_EXT_external_memory_host, to import the guest's memory in place.
+    bool IsGuestMemoryImportSupported() const {
+        return guest_memory_import;
+    }
+
     bool IsGuestMemoryExportSupported() const {
         return guest_memory_export;
     }
@@ -157,6 +167,11 @@ public:
     }
 
     /// bbport: VK_AMD_buffer_marker (GPU breadcrumbs).
+    /// bbport: VK_EXT_device_fault, what the GPU did wrong when the device is lost.
+    bool IsDeviceFaultSupported() const {
+        return device_fault;
+    }
+
     bool IsBufferMarkerSupported() const {
         return buffer_marker;
     }
@@ -328,6 +343,11 @@ public:
         return IsFsr411Supported() && cooperative_matrix && vk12_features.vulkanMemoryModel &&
                vk13_features.subgroupSizeControl && vk13_features.computeFullSubgroups &&
                vk12_features.storageBuffer8BitAccess;
+    }
+
+    /// bbport: the device extensions NVIDIA NGX (DLSS) needs are enabled.
+    bool IsDlssCapable() const {
+        return dlss_extensions;
     }
 
     /// VK_KHR_shader_clock is supported.
@@ -575,6 +595,7 @@ private:
     vk::Queue graphics_queue;
     vk::Queue readback_queue;
     bool guest_memory_export{};
+    bool guest_memory_import{};
     bool host_memory_import{};
     u32 readback_family_index = NoFamily;
     std::vector<vk::PhysicalDevice> physical_devices;
@@ -592,6 +613,7 @@ private:
     bool vertex_input_dynamic_state{};
     bool list_restart{};
     bool provoking_vertex{};
+    bool device_fault{};
     bool shader_stencil_export{};
     bool image_load_store_lod{};
     bool amd_gcn_shader{};
@@ -612,6 +634,7 @@ private:
     bool mixed_float_dot_product{}; // bbport: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)
     bool cooperative_matrix{};      // bbport: VK_KHR_cooperative_matrix (FSR 4.1.1 FP8 variant)
     bool shader_float8{};           // bbport: VK_EXT_shader_float8 with FP8 matrices (RDNA4)
+    bool dlss_extensions{};         // bbport: VK_NVX_binary_import + VK_NVX_image_view_handle
     bool supports_memory_budget{};
     bool supports_block_texel_view{};
     u64 total_memory_budget{};

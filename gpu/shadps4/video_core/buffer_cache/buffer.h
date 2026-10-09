@@ -53,6 +53,14 @@ inline bool WriteTracking() {
 /// BB_WRITE_VERIFY=1 (diagnostics, without write tracking): pages the GPU side watches are protected as
 /// well, so writes into them that nothing announced show up as write faults (their sites).
 bool WriteVerify();
+/// bbport BB_GPU_WRITES_VRAM=1 (buffer_cache.cpp): GPU-written buffers get VRAM copies.
+bool GpuWritesVram();
+/// The hybrid model (BB_WRITE_TRACKING=1 + BB_GPU_WRITES_VRAM=1): the copy shader's destinations
+/// go to VRAM as before 0.5 (in place a discrete GPU reads the geometry they hold over PCIe:
+/// 11 FPS on an RTX 4060 Laptop).
+inline bool HybridModel() {
+    return WriteTracking() && GpuWritesVram();
+}
 
 /// bbport BB_CONSTANTS_IN_PLACE=1 (with BB_GUEST_IN_PLACE): small read-only buffers (constants) are
 /// read by the GPU where the game wrote them, when the draw executes, like everything else in

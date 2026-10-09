@@ -3,13 +3,28 @@
 #include <time.h>
 #include <stdint.h>
 #include <stddef.h>
-#ifndef _WIN32
+#ifdef _WIN32
+#include "win32_compat.h"
+#endif
+#include "host_sync.h"
+#ifdef _WIN32
+/* runtime_setjmp/runtime_longjmp (runtime_host.c): every Win64 callee-saved register, and no
+ * SEH unwinding, which cannot pass the guest frames in between (they have no unwind data). */
+typedef struct { _Alignas(16) unsigned char registers[256]; } RuntimeRecoverBuf;
+int runtime_setjmp(RuntimeRecoverBuf *buf) __attribute__((returns_twice));
+__attribute__((noreturn)) void runtime_longjmp(RuntimeRecoverBuf *buf);
+#define RUNTIME_RECOVER_SET(buf) runtime_setjmp(&(buf))
+#define RUNTIME_RECOVER_JUMP(buf) runtime_longjmp(&(buf))
+#else
 #include <setjmp.h>
+typedef sigjmp_buf RuntimeRecoverBuf;
+#define RUNTIME_RECOVER_SET(buf) sigsetjmp(buf, 0)
+#define RUNTIME_RECOVER_JUMP(buf) siglongjmp(buf, 1)
+#endif
 /* Recovery point for speculative guest memory reads on this thread (probe.c fault handler). */
-extern __thread sigjmp_buf *runtime_fault_recover;
+extern __thread RuntimeRecoverBuf *runtime_fault_recover;
 /* Restarts the game (in-game settings menu, render resolution change). */
 void runtime_restart(void);
-#endif
 #define ABI __attribute__((sysv_abi))
 typedef void (ABI *GuestCallback)(void);
 void runtime_start(uint64_t capabilities);
@@ -30,7 +45,12 @@ void runtime_wait_report(double frames);
 void runtime_guest_call_sites(uint64_t out[3]);
 /* bbport: times the game's heap asked for more memory (posix_mmap): a sign it leaks. */
 uint64_t runtime_heap_growths(void);
+#ifdef _WIN32
+uint64_t host_monotonic_ns(void);
+static inline uint64_t runtime_wait_clock(void) { return host_monotonic_ns(); }
+#else
 static inline uint64_t runtime_wait_clock(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (uint64_t)t.tv_sec*1000000000+(uint64_t)t.tv_nsec; }
+#endif
 const char *runtime_import_name(const char *name);
 uintptr_t runtime_rwlock_resolve(const char *name);
 void runtime_rwlock_report(void);
@@ -59,6 +79,8 @@ uintptr_t runtime_file_resolve(const char *name);
 uintptr_t runtime_services_resolve(const char *name);
 void runtime_file_report(void);
 void runtime_file_configure(const char *app0, const char *user);
+/* The port's copy of menu/optionsetting.gfx with pop-up lists above the rows is in use. */
+int runtime_file_menu_layout_fixed(void);
 int runtime_file_mount(const char *guest, const char *host);
 void runtime_file_unmount(const char *guest);
 int runtime_file_translate(const char *guest, char *out, size_t size);

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_wait_trace.h"
+// bbport (Windows): a Linux-only diagnostic (signals, /proc, process_vm_readv, dma-buf or
+// mprotect traps); off unless its variables are set. Windows builds the inert API below.
+#ifndef _WIN32
 
 #include <algorithm>
 #include <array>
@@ -123,3 +126,12 @@ void Report(double window_s) {
     }
 }
 } // namespace BbWaitTrace
+#else
+#include <cstdint>
+namespace BbWaitTrace {
+bool Enabled() { return false; }
+Scope::Scope() {}
+Scope::~Scope() {}
+void Report(double) {}
+} // namespace BbWaitTrace
+#endif

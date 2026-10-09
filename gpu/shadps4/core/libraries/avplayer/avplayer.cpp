@@ -234,7 +234,14 @@ s32 PS4_SYSV_ABI sceAvPlayerStop(AvPlayerHandle handle) {
     if (handle == nullptr) {
         return ORBIS_AVPLAYER_ERROR_INVALID_PARAMS;
     }
-    return handle->Stop();
+    // bbport: guest code calls this and cannot unwind a C++ exception (a failed join on
+    // Windows ended the process after the opening cutscene in Supermedo's port, 1.3).
+    try {
+        return handle->Stop();
+    } catch (const std::exception& error) {
+        LOG_ERROR(Lib_AvPlayer, "Stop failed: {}", error.what());
+        return ORBIS_AVPLAYER_ERROR_OPERATION_FAILED;
+    }
 }
 
 s32 PS4_SYSV_ABI sceAvPlayerStreamCount(AvPlayerHandle handle) {

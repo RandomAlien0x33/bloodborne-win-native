@@ -3,11 +3,11 @@
 
 #include <chrono>
 #include <thread>
-#include <pthread.h>
-#include <sys/resource.h>
+#include <array>
+#ifndef _WIN32
 #include <sys/uio.h>
 #include <unistd.h>
-#include <array>
+#endif
 #include <optional>
 #include <utility>
 #include <time.h>
@@ -15,7 +15,9 @@
 #include "bbport_ce_stats.h"
 #include "bbport_timeline.h"
 #include "bbport_copy.h"
+#include "bbport_platform.h"
 #include "bbport_toggles.h"
+#include <atomic>
 #include <cstdio>
 #include <boost/preprocessor/stringize.hpp>
 
@@ -34,6 +36,7 @@
 #include "bbport_write_log.h"
 #include "bbport_free_check.h"
 #include "video_core/amdgpu/pm4_cmds.h"
+#include "video_core/amdgpu/pm4_resync.h"
 #include "video_core/amdgpu/pm4_selftest.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
@@ -120,14 +123,36 @@ void Liverpool::ProcessCommands() {
     }
 }
 
+bool Liverpool::Quiesce(u32 timeout_ms) {
+    if (std::this_thread::get_id() == gpu_id) {
+        return false; // the GPU command thread itself cannot wait for its own safe point
+    }
+    quiesce_requested.store(true, std::memory_order_release);
+    {
+        std::scoped_lock lk{submit_mutex};
+        submit_cv.notify_all();
+    }
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (!quiesce_done.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+}
+
 void Liverpool::Process(std::stop_token stoken) {
     Common::SetCurrentThreadName("shadPS4:GpuCommandProcessor");
-    if (clockid_t clock; pthread_getcpuclockid(pthread_self(), &clock) == 0) {
-        BbStats::gpu_thread_clock.store(static_cast<int>(clock));
+    if (const int clock = BbPlatform::ThreadCpuClock(); clock != -1) {
+        BbStats::gpu_thread_clock.store(clock);
     }
     gpu_id = std::this_thread::get_id();
 #ifdef __linux__
     gpu_tid = gettid();
+#elif defined(_WIN32)
+    gpu_tid = BbPlatform::CurrentThreadId();
 #endif
 
     while (!stoken.stop_requested()) {
@@ -169,7 +194,8 @@ void Liverpool::Process(std::stop_token stoken) {
             }());
             if (spin_time.count() > 0) {
                 const auto spin_until = idle_start + spin_time;
-                for (u32 spins = 1; !(num_commands || num_submits || submit_done) &&
+                for (u32 spins = 1; !(num_commands || num_submits || submit_done ||
+                                      quiesce_requested.load(std::memory_order_relaxed)) &&
                                     !stoken.stop_requested();
                      ++spins) {
                     __builtin_ia32_pause();
@@ -179,8 +205,10 @@ void Liverpool::Process(std::stop_token stoken) {
                 }
             }
             std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(submit_cv, lk, stoken,
-                                [this] { return num_commands || num_submits || submit_done; });
+            Common::CondvarWait(submit_cv, lk, stoken, [this] {
+                return num_commands || num_submits || submit_done ||
+                       quiesce_requested.load(std::memory_order_relaxed);
+            });
             BbStats::gpu_idle_ns.fetch_add(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - idle_start).count(),
@@ -188,6 +216,18 @@ void Liverpool::Process(std::stop_token stoken) {
             BbTimeline::Note(BbTimeline::DecoderIdleEnd);
         }
         if (stoken.stop_requested()) {
+            break;
+        }
+        if (quiesce_requested.load(std::memory_order_acquire)) {
+            // Everything handed to the draw pipeline and the recording threads is recorded and
+            // submitted, and the GPU has finished it; no more work is taken after this.
+            if (rasterizer) {
+                rasterizer->Finish();
+            }
+            quiesce_done.store(true, std::memory_order_release);
+            while (!stoken.stop_requested()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
             break;
         }
 
@@ -1234,14 +1274,22 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
 
         switch (type) {
         default:
-            ReportBadPacket(base_addr, dcb_dwords, dcb.data(), seq, dcb_depth);
-            UNREACHABLE_MSG("Wrong PM4 type {}", type);
-            break;
-        case 0:
-            ReportBadPacket(base_addr, dcb_dwords, dcb.data(), seq, dcb_depth);
-            UNREACHABLE_MSG("Unimplemented PM4 type 0, base reg: {}, size: {}",
-                            header->type0.base.Value(), header->type0.NumWords());
-            break;
+        case 0: {
+            // bbport: an invalid header ended the game (UNREACHABLE: "Unimplemented PM4 type
+            // 0"), seen at area loads. Decoding resumes at the next dword that can start a type 3
+            // packet, so the rest of the buffer and its fences still run (dropping them would
+            // leave the guest waiting for them). The draw preparation scanner skips by the same
+            // rule (pm4_resync.h).
+            static std::atomic<int> reports{0};
+            if (reports.fetch_add(1, std::memory_order_relaxed) < 8) {
+                ReportBadPacket(base_addr, dcb_dwords, dcb.data(), seq, dcb_depth);
+            }
+            const std::size_t skip = ResyncSkip(dcb);
+            std::fprintf(stderr, "PM4: invalid header %#x, resynced %zu dwords later\n",
+                         header->raw, skip);
+            dcb = NextPacket(dcb, skip);
+            continue;
+        }
         case 2:
             // Type-2 packet are used for padding purposes
             dcb = NextPacket(dcb, 1);
@@ -2037,14 +2085,12 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     }
     if (seq != NoSeq && BbStats::enabled) {
         BbStats::submissions.fetch_add(1, std::memory_order_relaxed);
-        if (rusage usage{}; getrusage(RUSAGE_THREAD, &usage) == 0) {
-            BbStats::gpu_user_us.store(u64(usage.ru_utime.tv_sec) * 1000000 + usage.ru_utime.tv_usec,
-                                       std::memory_order_relaxed);
-            BbStats::gpu_sys_us.store(u64(usage.ru_stime.tv_sec) * 1000000 + usage.ru_stime.tv_usec,
-                                      std::memory_order_relaxed);
-            BbStats::gpu_invol_switches.store(usage.ru_nivcsw, std::memory_order_relaxed);
-            BbStats::gpu_vol_switches.store(usage.ru_nvcsw, std::memory_order_relaxed);
-            BbStats::gpu_minor_faults.store(usage.ru_minflt, std::memory_order_relaxed);
+        if (BbPlatform::Usage usage; BbPlatform::GetUsage(true, usage)) {
+            BbStats::gpu_user_us.store(usage.user_us, std::memory_order_relaxed);
+            BbStats::gpu_sys_us.store(usage.sys_us, std::memory_order_relaxed);
+            BbStats::gpu_invol_switches.store(usage.invol_switches, std::memory_order_relaxed);
+            BbStats::gpu_vol_switches.store(usage.vol_switches, std::memory_order_relaxed);
+            BbStats::gpu_minor_faults.store(usage.minor_faults, std::memory_order_relaxed);
         }
     }
 
@@ -2547,8 +2593,7 @@ void Liverpool::CheckSubmittedCopy(const SubmittedCopy& copy, u64 seq) {
         std::array<u32, 1024> buf;
         for (std::size_t at = 0; at < dwords; at += buf.size()) {
             const std::size_t n = std::min(buf.size(), dwords - at);
-            iovec local{buf.data(), n * 4}, remote{const_cast<u32*>(guest + at), n * 4};
-            if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != ssize_t(n * 4)) {
+            if (!BbPlatform::ReadMemory(buf.data(), guest + at, n * 4)) {
                 // bbport BB_GUEST_IN_PLACE: dma-buf guest memory is not readable that way; still
                 // mapped, it is read directly.
                 int prot = 0, type = -1;
@@ -2600,8 +2645,7 @@ void Liverpool::CheckSubmittedCopy(const SubmittedCopy& copy, u64 seq) {
     const std::size_t dwords = dcb_change != -1 ? copy.dcb_dwords : copy.ccb_dwords;
     const std::size_t from = at >= 8 ? at - 8 : 0, to = std::min<std::size_t>(dwords, at + 8);
     std::array<u32, 16> now{};
-    iovec local{now.data(), (to - from) * 4}, remote{const_cast<u32*>(guest + from), (to - from) * 4};
-    const bool readable = process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == ssize_t((to - from) * 4);
+    const bool readable = BbPlatform::ReadMemory(now.data(), guest + from, (to - from) * 4);
     std::printf("  submitted:");
     for (std::size_t i = from; i < to; ++i) {
         std::printf(i == std::size_t(at) ? " [%08x]" : " %08x", kept[i]);

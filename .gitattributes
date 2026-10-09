@@ -1,0 +1,4 @@
+# cmd.exe needs CRLF batch files
+*.bat text eol=crlf
+# patches apply to LF sources
+*.patch text eol=lf

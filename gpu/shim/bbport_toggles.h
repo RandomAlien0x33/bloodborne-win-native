@@ -12,7 +12,22 @@ extern "C" std::uint64_t runtime_disabled_optimizations;
 /// Temporary experiment bits: the second number in BB_TOGGLE_FILE (runtime_memory.c).
 extern "C" std::uint64_t runtime_experiment_bits;
 /// Recovery point for speculative guest memory reads on this thread (runtime_memory.c).
-extern "C" __thread sigjmp_buf* runtime_fault_recover;
+/// BB_RECOVER_SET(buf) returns nonzero when the loader's fault handler jumps back to it.
+#ifdef _WIN32
+// No unwinding on Windows: guest frames between the fault and the recovery point have no
+// unwind data. runtime_setjmp/runtime_longjmp (src/runtime_host.c) save and restore every
+// callee-saved register; layout as RuntimeRecoverBuf in src/runtime.h.
+struct alignas(16) BbRecoverBuf {
+    unsigned char registers[256];
+};
+extern "C" __thread BbRecoverBuf* runtime_fault_recover;
+extern "C" int runtime_setjmp(BbRecoverBuf* buf) __attribute__((returns_twice));
+#define BB_RECOVER_SET(buf) runtime_setjmp(&(buf))
+#else
+typedef sigjmp_buf BbRecoverBuf;
+extern "C" __thread BbRecoverBuf* runtime_fault_recover;
+#define BB_RECOVER_SET(buf) sigsetjmp(buf, 0)
+#endif
 
 namespace BbToggle {
 enum : std::uint64_t {
@@ -176,6 +191,9 @@ inline std::atomic<std::uint32_t> frame_number{0};
 inline std::atomic<std::uint64_t> preupload_bytes{0};
 /// Device memory allocated (VMA blocks, arena residency) and freed, bytes.
 inline std::atomic<std::uint64_t> device_alloc_bytes{0}, device_free_bytes{0};
+/// bbport: this process's use of the GPU's own memory heaps and the driver's current budget for
+/// it (VK_EXT_memory_budget), bytes; refreshed by the texture collector (FPS overlay, stats).
+inline std::atomic<std::uint64_t> vram_used_bytes{0}, vram_budget_bytes{0};
 /// Memory statistics: registered images (their guest size) and how many; the buffer cache's VRAM
 /// for guest blocks (allocated, never returned to the driver), and the part of it unused (its
 /// free list and the rest of the current 64 MiB block).

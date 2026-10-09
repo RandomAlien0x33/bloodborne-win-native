@@ -97,13 +97,16 @@ static ABI int32_t addon_list(uint32_t service,void *list,uint32_t capacity,uint
     DIR *titles=opendir(root);
     for (struct dirent *t; titles && (t=readdir(titles));) {
         if (t->d_name[0]=='.') continue;
-        int title=openat(dirfd(titles),t->d_name,O_RDONLY|O_DIRECTORY);
-        DIR *labels=title>=0 ? fdopendir(title) : NULL;
-        if (!labels && title>=0) close(title);
+        /* bbport: by path (no openat/fdopendir/fstatat on Windows). */
+        char title_dir[4096+256];
+        snprintf(title_dir,sizeof(title_dir),"%s/%s",root,t->d_name);
+        DIR *labels=opendir(title_dir);
         for (struct dirent *l; labels && (l=readdir(labels));) {
             struct stat entry;
             size_t n=strlen(l->d_name);
-            if (l->d_name[0]=='.' || n>=LABEL_SIZE || fstatat(dirfd(labels),l->d_name,&entry,0) ||
+            char label_dir[sizeof(title_dir)+256];
+            snprintf(label_dir,sizeof(label_dir),"%s/%s",title_dir,l->d_name);
+            if (l->d_name[0]=='.' || n>=LABEL_SIZE || stat(label_dir,&entry) ||
                 !S_ISDIR(entry.st_mode) || (fill && count>=capacity)) continue;
             if (fill) {
                 AddonInfo info;

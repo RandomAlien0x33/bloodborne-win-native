@@ -1,10 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#ifndef _WIN32
 #include <dlfcn.h>
+#endif
 #include <map>
 #include <unordered_set>
 #include <xxhash.h>
+#include "bbport_platform.h"
 #include "video_core/renderer_vulkan/ui_composition.h"
 #include "bbport_timeline.h"
 #include "bbport_sections.h"
@@ -1296,8 +1299,8 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
             std::memcpy(flat.data(), snapshot.user_data,
                         std::min(snapshot.user_data_size, snapshot.flat_size) * sizeof(u32));
             // Pointers in the tables may be stale by now: a fault only skips the check.
-            sigjmp_buf recover;
-            if (sigsetjmp(recover, 0)) {
+            BbRecoverBuf recover;
+            if (BB_RECOVER_SET(recover)) {
                 runtime_fault_recover = nullptr;
                 continue;
             }
@@ -1430,12 +1433,16 @@ void Rasterizer::PrintPipeStats() {
         std::printf("\n  stage B tasks (us per frame-second, count/s):");
         static std::array<u64, TaskKinds> last_task_cycles{}, last_task_counts{};
         for (std::size_t k = 0; k < TaskKinds && task_kinds[k]; ++k) {
+            char name[160];
+#ifdef _WIN32
+            BbPlatform::DescribeAddress(task_kinds[k], name, sizeof(name));
+#else
             Dl_info info{};
             dladdr(task_kinds[k], &info);
-            char name[32];
             std::snprintf(name, sizeof(name), "+0x%llx",
                           (unsigned long long)(reinterpret_cast<u64>(task_kinds[k]) -
                                                reinterpret_cast<u64>(info.dli_fbase)));
+#endif
             const u64 c = task_cycles[k], n = task_counts[k];
             std::printf(" [%s %.0f us/s %.0f/s]", name,
                         1e6 * double(c - last_task_cycles[k]) / tsc_hz / seconds,
@@ -1488,6 +1495,28 @@ bool Rasterizer::FilterDrawPasses() const {
 void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
     RENDERER_TRACE;
     BbStats::draws.fetch_add(1, std::memory_order_relaxed);
+    // bbport debugging: BB_IMAGE_DUMP_TRIGGER=<file> holding hex guest addresses, one per line;
+    // the images registered there are written to BB_CAPTURE_DIR (TextureCache::DumpImagesAt).
+    if (static const char* trigger = std::getenv("BB_IMAGE_DUMP_TRIGGER"); trigger) {
+        static u32 polls = 0;
+        if ((++polls & 1023) == 0 && std::filesystem::exists(trigger)) {
+            std::vector<VAddr> addresses;
+            if (FILE* f = std::fopen(trigger, "r")) {
+                unsigned long long address;
+                while (std::fscanf(f, "%llx", &address) == 1) {
+                    addresses.push_back(address);
+                }
+                std::fclose(f);
+            }
+            std::error_code ec;
+            std::filesystem::remove(trigger, ec);
+            DrainDrawPipe(DrawPipe::ReasonDraw);
+            const char* dir = std::getenv("BB_CAPTURE_DIR");
+            for (const VAddr address : addresses) {
+                texture_cache.DumpImagesAt(address, dir ? dir : ".");
+            }
+        }
+    }
 
     // bbport: with the draw pipeline this thread only selects the pipeline and hands the draw
     // to the recording thread (DrawRecord there); draws FilterDraw handles itself run here.
@@ -1932,7 +1961,7 @@ void Rasterizer::DispatchRecord(const ComputePipeline* pipeline) {
     // the game's memory. They hold data our translator reads on the CPU (next to shader code the
     // game uploads this way); a VRAM copy of them showed it a stale copy (a black scene). The
     // copy list read on the CPU (vk_shader_hle.cpp) kept them in place too.
-    buffer_cache.force_writes_in_place = cs.pgm_hash == 0xfefebf9f;
+    buffer_cache.force_writes_in_place = cs.pgm_hash == 0xfefebf9f && !VideoCore::HybridModel();
     const bool bound = BindResources(pipeline);
     buffer_cache.force_writes_in_place = false;
     if (!bound) {

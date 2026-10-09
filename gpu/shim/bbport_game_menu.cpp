@@ -1,8 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "bbport_game_menu.h"
 
+#ifdef _WIN32
+#include <windows.h>
+// bbport (Windows): the guest range around the image is the port's own reservation; the runtime
+// hands out host memory inside it (runtime_low_map), within rel32 reach of the image.
+extern "C" void* runtime_low_map(size_t size, int prot);
+#else
 #include <sys/mman.h>
 #include <unistd.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -13,6 +20,33 @@
 #include <vector>
 
 #include "bbport_settings.h"
+
+// The runtime serves its copy of menu/optionsetting.gfx (runtime_file.c).
+extern "C" int runtime_file_menu_layout_fixed(void);
+
+// bbport (Windows): the game calls and is called with the System V ABI, not the host's Win64 one.
+#ifdef _WIN32
+#define GUEST_ABI __attribute__((sysv_abi))
+#else
+#define GUEST_ABI
+#endif
+
+// bbport: no aligned_alloc in the Windows CRT.
+static void* AlignedAlloc(std::size_t alignment, std::size_t size) {
+#ifdef _WIN32
+    return _aligned_malloc(size, alignment);
+#else
+    return std::aligned_alloc(alignment, size);
+#endif
+}
+static void AlignedFree(void* p) {
+#ifdef _WIN32
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+}
+
 
 namespace BbGameMenu {
 namespace {
@@ -29,16 +63,33 @@ constexpr u64 FactoryToFunction = 0x1b6ed90; ///< ({vtable, fn}, out std::functi
 constexpr u64 CreatePage = 0x1bb4c70;    ///< (out, arg, content std::function): an options page
 constexpr u64 OpenPage = 0x1b20900;      ///< (a, b, layout name, rows fn, 0, 0): the page's content
 constexpr u64 ListPush = 0x1b1bbd0;      ///< (value list, {u32 value, text}): up to 32 values
-constexpr u64 ListRow = 0x1b78ab0;   ///< (page, texts, int* value, value list, int* default): pop-up list
+constexpr u64 ListRow = 0x1b29370;   ///< (page, texts, int* value, value list, int* default): pop-up list (the Language page's; 0x1b78ab0, the Chalice search page's, drew under the rows below it here)
 constexpr u64 PairPush = 0x1b2c200;  ///< (two-value list, {u8 value, text})
 constexpr u64 PairRow = 0x1b2a100;   ///< (page, texts, u8* value, two-value list, u8* default): left/right
 constexpr u64 SliderRow = 0x1b2ac00; ///< (page, texts, u8* value 0..10, u8* default)
 constexpr u64 FactoryVtable = 0x533d120; ///< a System item's {vtable, page factory fn}
 constexpr u64 ContentVtable = 0x5343880; ///< an options page's {vtable, content fn}
-constexpr u64 ControlsLayout = 0x4934065; ///< "ControllSetting": six plain rows, the layout used
+constexpr u64 ControlsLayout = 0x4934065; ///< "ControllSetting": six plain rows
+/// "LanguageSetting": the layout with pop-up lists (OpenPage builds every System page; on
+/// ControllSetting, whose own page has none, an open list was drawn under the rows below it).
+constexpr u64 LanguageLayout = 0x4934055;
 constexpr u32 TextName = 0xc8, TextHelp = 0xc9; // SP_menu text / SP_one-line help
 constexpr u32 ScreenSoundItem = 110001;         // "Screen/Sound" in the System menu: ours follow it
 constexpr u32 ControlsTitle = 113020;           // the ControllSetting layout's title ("Controls")
+constexpr u32 LanguageTitle = 115010;           // the LanguageSetting layout's title ("Language")
+/// ControllSetting (six rows) when the runtime serves its copy of menu/optionsetting.gfx with the
+/// rows in the order LanguageSetting has them (runtime_file.c), else LanguageSetting (two rows at a
+/// time). BB_GAME_MENU_LAYOUT=ControllSetting/LanguageSetting chooses.
+bool ControlsLayoutUsed() {
+    static const bool on = [] {
+        const char* env = std::getenv("BB_GAME_MENU_LAYOUT");
+        if (env && env[0]) {
+            return std::strcmp(env, "LanguageSetting") != 0;
+        }
+        return runtime_file_menu_layout_fixed() != 0;
+    }();
+    return on;
+}
 constexpr std::size_t RowsPerPage = 6;          // ControllSetting's rows
 
 const u8 MsgLookupPrologue[] = {0x89, 0xf0, 0x48, 0x8b, 0x77, 0x08, 0x48, 0x8b, 0x34, 0xc6};
@@ -90,7 +141,14 @@ u32 AddText(const char* english, const char* russian) {
 enum class GameLanguage { Unknown, English, Russian };
 std::atomic<GameLanguage> game_language{GameLanguage::Unknown};
 
+// The memory mode row's help line, and its variant for integrated GPUs, where the list also
+// offers "Integrated GPU" (MemoryModelAvailable). 0 until defined.
+u32 memory_help = 0, memory_help_integrated = 0;
+
 const char16_t* TextOf(u32 id) {
+    if (id == memory_help && memory_help_integrated && BbSettings::Get().integrated_gpu) {
+        id = memory_help_integrated;
+    }
     const Text& t = texts[id - IdBase];
     const GameLanguage game = game_language.load();
     const bool russian = game == GameLanguage::Unknown
@@ -102,7 +160,7 @@ const char16_t* TextOf(u32 id) {
 // ---- The port's values the game's rows edit (ints: the list rows bind ints). ----
 enum Field : int {
     OutputRes, Upscaler, Preset, Sharpness, ShowFps,
-    ModelLod, FirstEffect, FieldCount = FirstEffect + BbSettings::EffectCount
+    ModelLod, Memory, MouseCamera, MouseSensitivity, MouseInvertY, FirstEffect, FieldCount = FirstEffect + BbSettings::EffectCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
 u8 bytes[FieldCount];    // the same for toggle and slider rows (they bind bytes)
@@ -114,6 +172,8 @@ std::atomic<bool> values_valid{false};
 constexpr float SharpnessStep = 0.2f; // the game's slider: 0..10 -> 0.0 .. 2.0
 constexpr int SharpnessSteps = 11;
 constexpr int LodValues[] = {-2, 0, 1, 2};
+// The mouse sensitivity slider (0..10): x 0.022 degrees per count, as in Source games.
+constexpr float MouseSensitivities[11] = {0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f, 5.0f};
 
 /// The rows' values of settings `s`.
 void Fill(const BbSettings::Values& s, int* values) {
@@ -127,6 +187,16 @@ void Fill(const BbSettings::Values& s, int* values) {
     values[ModelLod] = 1;
     for (int i = 0; i < 4; ++i) {
         if (LodValues[i] == s.model_lod) values[ModelLod] = i;
+    }
+    values[Memory] = s.memory_model;
+    values[MouseCamera] = s.mouse_camera;
+    values[MouseInvertY] = s.mouse_invert_y;
+    values[MouseSensitivity] = 0;
+    for (int i = 0; i < 11; ++i) {
+        if (std::fabs(MouseSensitivities[i] - s.mouse_sensitivity) <
+            std::fabs(MouseSensitivities[values[MouseSensitivity]] - s.mouse_sensitivity)) {
+            values[MouseSensitivity] = i;
+        }
     }
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         values[FirstEffect + e] = s.effects[e];
@@ -174,22 +244,47 @@ void DefineTexts() {
 
     page("Display", "Изображение", "Resolution, upscaler and sharpness (bbport)",
          "Разрешение, апскейлер и резкость (bbport)");
+    // Output and preset are a startup patch unless live resolution changes are on (run.sh /
+    // run_game.py set BB_RENDER_RES then): their help says so.
+    const bool fixed = BbSettings::FixedRenderSession();
     row(OutputRes, "Output resolution", "Разрешение вывода",
-        "Size of the final frame and the interface", "Размер готового кадра и интерфейса",
+        fixed ? "Size of the final frame and the interface (after a restart)" : "Size of the final frame and the interface",
+        fixed ? "Размер готового кадра и интерфейса (после перезапуска)" : "Размер готового кадра и интерфейса",
         {AddText("1280 x 720", "1280 x 720"), AddText("1920 x 1080", "1920 x 1080"),
          AddText("2560 x 1440", "2560 x 1440"), AddText("3840 x 2160", "3840 x 2160")});
-    row(Upscaler, "Upscaler", "Апскейлер", "Temporal upscaler and anti-aliasing",
-        "Временной апскейлер и сглаживание",
+    row(Upscaler, "Upscaler", "Апскейлер",
+        fixed ? "Applies at once; to or from TAA and Off after a restart" : "Temporal upscaler and anti-aliasing",
+        fixed ? "Сразу; переход на TAA и Выкл и обратно после перезапуска" : "Временной апскейлер и сглаживание",
         {off, AddText("FSR 3.1", "FSR 3.1"), AddText("FSR 4", "FSR 4"), AddText("FSR 4.1.1", "FSR 4.1.1"),
          AddText("TAA", "TAA"), AddText("DLSS", "DLSS")});
-    row(Preset, "Quality preset", "Пресет", "Scene resolution relative to the output",
-        "Разрешение сцены относительно вывода",
+    row(Preset, "Quality preset", "Пресет",
+        fixed ? "Scene resolution relative to the output (after a restart)" : "Scene resolution relative to the output",
+        fixed ? "Разрешение сцены относительно вывода (после перезапуска)" : "Разрешение сцены относительно вывода",
         {AddText("Native AA", "Native AA"), AddText("Quality", "Quality"), AddText("Balanced", "Balanced"),
          AddText("Performance", "Performance"), AddText("Ultra Performance", "Ultra Performance")});
     row(Sharpness, "Sharpness", "Резкость", "RCAS after the upscaler: 0 off, 10 strongest",
         "RCAS после апскейлера: 0 выкл, 10 сильнее всего", {}, Kind::Slider);
     row(ShowFps, "FPS counter", "Счётчик FPS", "Frame rate in the top right corner",
         "Частота кадров в правом верхнем углу", toggle);
+
+    page("Additional", "Дополнительно", "More port settings (bbport)", "Другие настройки порта (bbport)");
+    row(Memory, "Memory mode", "Режим памяти",
+        "Hybrid is faster; if the game crashes, choose Classic. After a restart",
+        "Гибрид быстрее; если игра вылетает, выберите Классический. После перезапуска",
+        {AddText("Classic", "Классический"), AddText("Hybrid", "Гибрид"),
+         AddText("Integrated GPU", "Встроенная графика")});
+    memory_help = pages.back().rows.back().help;
+    memory_help_integrated =
+        AddText("Hybrid is faster, Integrated GPU has no copies; on crashes choose Classic. After a restart",
+                "Гибрид быстрее, Встроенная графика без копий; при вылетах выберите Классический. После перезапуска");
+    row(MouseCamera, "Mouse camera", "Камера мышью",
+        "The mouse turns the camera while the game window has focus",
+        "Мышь поворачивает камеру, пока окно игры в фокусе", toggle);
+    row(MouseSensitivity, "Mouse sensitivity", "Чувствительность мыши",
+        "How far the camera turns per mouse movement", "Насколько камера поворачивается от движения мыши",
+        {}, Kind::Slider);
+    row(MouseInvertY, "Invert mouse Y", "Инверсия мыши по Y", "Mouse up looks down",
+        "Мышь вверх: взгляд вниз", toggle);
 
     page("Game effects", "Эффекты игры", "Model detail and effects (bbport; after a restart)",
          "Детализация и эффекты (bbport; после перезапуска)");
@@ -257,7 +352,7 @@ void DestroyFunction(u8* f) {
     if (!impl) {
         return;
     }
-    using Destroy = void (*)(void*, int);
+    using Destroy = void (GUEST_ABI *)(void*, int);
     Destroy destroy = (*reinterpret_cast<Destroy**>(impl))[4];
     destroy(impl, impl != f);
     *reinterpret_cast<void**>(f + 0x20) = nullptr;
@@ -267,7 +362,7 @@ void DestroyFunction(u8* f) {
 void DestroyText(u8* text) {
     if (*reinterpret_cast<u64*>(text + 0x28) >= 8) {
         void* allocator = *reinterpret_cast<void**>(text + 0x30);
-        using Free = void (*)(void*, void*);
+        using Free = void (GUEST_ABI *)(void*, void*);
         (*reinterpret_cast<Free**>(allocator))[0x70 / 8](allocator, *reinterpret_cast<void**>(text + 0x10));
     }
     *reinterpret_cast<u64*>(text + 0x28) = 7;
@@ -287,9 +382,15 @@ void DestroyValues(u8* list, std::size_t count_offset) {
 }
 
 void MakeTexts(u8* pair, u32 name, u32 help) {
-    using Make = void* (*)(void*, u32, u32);
+    using Make = void* (GUEST_ABI *)(void*, u32, u32);
     Game<Make>(MakeText)(pair, TextName, name);
     Game<Make>(MakeText)(pair + TextSize, TextHelp, help);
+}
+
+/// Memory modes offered: Integrated GPU (direct) on an integrated GPU only, or when it is set.
+bool MemoryModelAvailable(int i) {
+    const auto& s = BbSettings::Get();
+    return i != BbSettings::MemoryDirect || s.integrated_gpu || s.memory_model == BbSettings::MemoryDirect;
 }
 
 /// Upscalers this GPU and build can run (known once the device exists, before any menu).
@@ -302,21 +403,21 @@ bool UpscalerAvailable(int i) {
 }
 
 void AddRows(void* page, const std::vector<Row>& rows) {
-    using Push = void (*)(void*, void*);
-    using AddRow = void (*)(void*, void*, int*, void*, const int*);
-    using Make = void* (*)(void*, u32, u32);
+    using Push = void (GUEST_ABI *)(void*, void*);
+    using AddRow = void (GUEST_ABI *)(void*, void*, int*, void*, const int*);
+    using Make = void* (GUEST_ABI *)(void*, u32, u32);
     for (const Row& row : rows) {
         alignas(16) u8 pair[2 * TextSize] = {};
         MakeTexts(pair, row.name, row.help);
         if (row.kind == Kind::Slider) {
-            using Slider = void (*)(void*, void*, u8*, const u8*);
+            using Slider = void (GUEST_ABI *)(void*, void*, u8*, const u8*);
             Game<Slider>(SliderRow)(page, pair, &bytes[row.field], &default_bytes[row.field]);
             DestroyTexts(pair);
             continue;
         }
         if (row.kind == Kind::Toggle) {
-            using PairRowFn = void (*)(void*, void*, u8*, void*, const u8*);
-            u8* two = static_cast<u8*>(std::aligned_alloc(16, PairListSize));
+            using PairRowFn = void (GUEST_ABI *)(void*, void*, u8*, void*, const u8*);
+            u8* two = static_cast<u8*>(AlignedAlloc(16, PairListSize));
             std::memset(two, 0, PairListSize);
             for (std::size_t i = 0; i < 2; ++i) {
                 alignas(16) u8 value[ValueSize] = {};
@@ -327,14 +428,15 @@ void AddRows(void* page, const std::vector<Row>& rows) {
             }
             Game<PairRowFn>(PairRow)(page, pair, &bytes[row.field], two, &default_bytes[row.field]);
             DestroyValues(two, PairCountOffset);
-            std::free(two);
+            AlignedFree(two);
             DestroyTexts(pair);
             continue;
         }
-        u8* list = static_cast<u8*>(std::aligned_alloc(16, ListSize));
+        u8* list = static_cast<u8*>(AlignedAlloc(16, ListSize));
         std::memset(list, 0, ListSize);
         for (std::size_t i = 0; i < row.choices.size(); ++i) {
-            if (row.field == Upscaler && !UpscalerAvailable(int(i))) {
+            if ((row.field == Upscaler && !UpscalerAvailable(int(i))) ||
+                (row.field == Memory && !MemoryModelAvailable(int(i)))) {
                 continue; // the list's values are the upscaler numbers, not positions
             }
             alignas(16) u8 value[ValueSize] = {};
@@ -345,7 +447,7 @@ void AddRows(void* page, const std::vector<Row>& rows) {
         }
         Game<AddRow>(ListRow)(page, pair, &values[row.field], list, &default_values[row.field]);
         DestroyValues(list, ListCountOffset);
-        std::free(list);
+        AlignedFree(list);
         DestroyTexts(pair);
     }
 }
@@ -353,19 +455,19 @@ void AddRows(void* page, const std::vector<Row>& rows) {
 std::atomic<const char16_t*> title_override{nullptr}; // while the game builds one of our pages (its menu thread)
 // Called by the game's menu code (guest threads, System V ABI like the game), one set per page.
 template <int P>
-void Rows(void* page, void*) {
+GUEST_ABI void Rows(void* page, void*) {
     LoadValues();
     AddRows(page, pages[P].rows);
 }
 template <int P>
-void* Content(void* a, void* b) {
-    using Open = void* (*)(void*, void*, const char*, void*, u64, u64);
+GUEST_ABI void* Content(void* a, void* b) {
+    using Open = void* (GUEST_ABI *)(void*, void*, const char*, void*, u64, u64);
     title_override = nullptr; // the title was looked up just before
-    return Game<Open>(OpenPage)(a, b, Game<const char*>(ControlsLayout),
+    return Game<Open>(OpenPage)(a, b, Game<const char*>(ControlsLayoutUsed() ? ControlsLayout : LanguageLayout),
                                 reinterpret_cast<void*>(&Rows<P>), 0, 0);
 }
 void* Factory(void* out, void* arg, void* content, const char16_t* title) {
-    using Create = void* (*)(void*, void*, void*);
+    using Create = void* (GUEST_ABI *)(void*, void*, void*);
     alignas(16) u8 function[FunctionSize] = {};
     *reinterpret_cast<u64*>(function) = image_base + ContentVtable;
     *reinterpret_cast<void**>(function + 8) = content;
@@ -378,7 +480,7 @@ void* Factory(void* out, void* arg, void* content, const char16_t* title) {
     return out;
 }
 template <int P>
-void* PageFactory(void* out, void* arg) {
+GUEST_ABI void* PageFactory(void* out, void* arg) {
     return Factory(out, arg, reinterpret_cast<void*>(&Content<P>), TextOf(pages[P].name));
 }
 constexpr std::size_t MaxPages = 6;
@@ -388,17 +490,17 @@ void* const factories[MaxPages] = {
     reinterpret_cast<void*>(&PageFactory<4>), reinterpret_cast<void*>(&PageFactory<5>)};
 
 // ---- Hooks ----
-using LookupFn = const char16_t* (*)(void*, u32, u32, u32);
-using AddFn = void* (*)(void*, void*, void*, void*);
+using LookupFn = const char16_t* (GUEST_ABI *)(void*, u32, u32, u32);
+using AddFn = void* (GUEST_ABI *)(void*, void*, void*, void*);
 LookupFn lookup_original = nullptr;
 AddFn add_original = nullptr;
 std::atomic<const void*> screen_sound_text{nullptr};
 
-const char16_t* LookupHook(void* repository, u32 table, u32 category, u32 id) {
+GUEST_ABI const char16_t* LookupHook(void* repository, u32 table, u32 category, u32 id) {
     if (id >= IdBase && id < IdBase + texts.size()) {
         return TextOf(id);
     }
-    if (title_override && category == TextName && id == ControlsTitle) {
+    if (title_override && category == TextName && id == (ControlsLayoutUsed() ? ControlsTitle : LanguageTitle)) {
         return title_override;
     }
     const char16_t* text = lookup_original(repository, table, category, id);
@@ -422,7 +524,7 @@ const char16_t* LookupHook(void* repository, u32 table, u32 category, u32 id) {
 }
 
 void AddItem(void* menu, u32 name, u32 help, void* factory) {
-    using ToFunction = void* (*)(void*, void*);
+    using ToFunction = void* (GUEST_ABI *)(void*, void*);
     alignas(16) u8 pair[2 * TextSize] = {};
     MakeTexts(pair, name, help);
     alignas(16) u8 source[FunctionSize] = {};
@@ -437,7 +539,7 @@ void AddItem(void* menu, u32 name, u32 help, void* factory) {
     DestroyTexts(pair);
 }
 
-void* AddHook(void* menu, void* pair, void* function, void* out) {
+GUEST_ABI void* AddHook(void* menu, void* pair, void* function, void* out) {
     void* result = add_original(menu, pair, function, out);
     const void* screen_sound = screen_sound_text.load();
     if (screen_sound && *reinterpret_cast<const void* const*>(pair) == screen_sound) {
@@ -487,6 +589,13 @@ bool Detour(unsigned char* image, u64 va, const u8* prologue, std::size_t length
 /// A mapping within +-2 GiB of the image, for rel32 jumps both ways.
 u8* MapNear(unsigned char* image, u64 image_size, std::size_t size) {
     const u64 base = reinterpret_cast<u64>(image);
+#ifdef _WIN32
+    (void)image_size;
+    auto* p = static_cast<u8*>(runtime_low_map(size, 3));
+    const u64 at = reinterpret_cast<u64>(p);
+    const u64 distance = at > base ? at - base : base - at;
+    return p && distance < (2000ull << 20) ? p : nullptr;
+#else
     for (u64 k = 1; k <= 64; ++k) {
         for (const u64 hint : {base - k * (24ull << 20), base + image_size + k * (24ull << 20)}) {
             void* p = mmap(reinterpret_cast<void*>(hint), size, PROT_READ | PROT_WRITE,
@@ -497,6 +606,7 @@ u8* MapNear(unsigned char* image, u64 image_size, std::size_t size) {
         }
     }
     return nullptr;
+#endif
 }
 
 } // namespace
@@ -506,7 +616,11 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
         return;
     }
     image_base = reinterpret_cast<u64>(image);
+#ifdef _WIN32
+    const std::size_t page = 4096;
+#else
     const std::size_t page = std::size_t(sysconf(_SC_PAGESIZE));
+#endif
     u8* stubs = MapNear(image, size, page);
     if (!stubs) {
         std::printf("Game menu: no memory near the image, the port's pages are off\n");
@@ -533,7 +647,13 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
                reinterpret_cast<void*>(&LookupHook), reinterpret_cast<void**>(&lookup_original), cursor) &&
         Detour(image, AddPageItem, AddPageItemPrologue, sizeof(AddPageItemPrologue),
                reinterpret_cast<void*>(&AddHook), reinterpret_cast<void**>(&add_original), cursor);
+#ifdef _WIN32
+    DWORD old_protect = 0;
+    VirtualProtect(stubs, page, PAGE_EXECUTE_READ, &old_protect);
+    FlushInstructionCache(GetCurrentProcess(), stubs, page);
+#else
     mprotect(stubs, page, PROT_READ | PROT_EXEC);
+#endif
     std::printf("Game menu: %s (%zu pages in System)\n", ok ? "the port's pages are in" : "hooks failed, off",
                 pages.size());
 }
@@ -562,6 +682,10 @@ void Poll() {
     }
     s.show_fps = values[ShowFps] != 0;
     s.model_lod = LodValues[std::clamp(values[ModelLod], 0, 3)];
+    s.memory_model = std::clamp(values[Memory], 0, BbSettings::MemoryModelCount - 1);
+    s.mouse_camera = values[MouseCamera] != 0;
+    s.mouse_invert_y = values[MouseInvertY] != 0;
+    s.mouse_sensitivity = MouseSensitivities[std::clamp(values[MouseSensitivity], 0, 10)];
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         s.effects[e] = values[FirstEffect + e] != 0;
     }
