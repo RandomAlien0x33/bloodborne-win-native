@@ -180,6 +180,189 @@ static int menu_layout_path(const char *guest) {
     return menu_layout_fixed && n>=m && !strcasecmp(guest+n-m,"menu/optionsetting.gfx") &&
            (n==m || guest[n-m-1]=='/');
 }
+/* bbport: the pause menu (menu/ingametop.gfx, Scaleform) is a grid six cells wide: its first row is
+ * Inventory, Status and System (cells Item_0_0..2, icons drawn on the panel) and empty cells. The
+ * port puts "Saves" fourth (bbport_game_menu.cpp), so the copy served instead has a cell Item_0_3
+ * (Item_0_2's, one step right) and under it an icon: the Hunter's Mark of the game's own icon sheet
+ * MENU_Common_00100 (the one the top row's icons are in), cut out by a square filled from it and
+ * tinted to the row's brown. At start the game's file is read and the copy is written to the user folder; opening the game's
+ * file opens the copy. The game folder is not changed. */
+static char top_menu_copy[600];
+static int top_menu_fixed;
+int runtime_file_top_menu_fixed(void) { return top_menu_fixed; }
+typedef struct { unsigned char *d; size_t size, bits; } BitWriter;
+static void put_bits(BitWriter *w,uint32_t v,unsigned n) {
+    while (n--) {
+        if (!(w->bits&7)) w->d[w->size++]=0;
+        if ((v>>n)&1) w->d[w->size-1]|=(unsigned char)(0x80>>(w->bits&7));
+        ++w->bits;
+    }
+}
+static void align_bits(BitWriter *w) { w->bits=(w->bits+7)&~(size_t)7; }
+static unsigned signed_bits(int32_t a,int32_t b) {
+    unsigned n=1;
+    while ((a<-(1<<(n-1)) || a>=(1<<(n-1))) || (b<-(1<<(n-1)) || b>=(1<<(n-1)))) ++n;
+    return n;
+}
+static void put_signed(BitWriter *w,int32_t v,unsigned n) { put_bits(w,(uint32_t)v&((n<32 ? 1u<<n : 0u)-1),n); }
+static uint32_t get_bits(const unsigned char *d,size_t *bit,unsigned n) {
+    uint32_t v=0;
+    for (unsigned i=0;i<n;++i,++*bit) v=v<<1|((d[*bit>>3]>>(7-(*bit&7)))&1);
+    return v;
+}
+static int32_t get_signed(const unsigned char *d,size_t *bit,unsigned n) {
+    uint32_t v=get_bits(d,bit,n);
+    return n && (v>>(n-1)&1) ? (int32_t)(v|~((1u<<n)-1)) : (int32_t)v;
+}
+/* SWF MATRIX: scale and rotate kept as written, the translation read out; returns its size. */
+typedef struct { int scale, rotate; unsigned scale_bits, rotate_bits; int32_t sx, sy, r0, r1, tx, ty; } Matrix;
+static size_t read_matrix(const unsigned char *d,Matrix *m) {
+    size_t bit=0; memset(m,0,sizeof(*m));
+    if ((m->scale=(int)get_bits(d,&bit,1))) { m->scale_bits=get_bits(d,&bit,5); m->sx=get_signed(d,&bit,m->scale_bits); m->sy=get_signed(d,&bit,m->scale_bits); }
+    if ((m->rotate=(int)get_bits(d,&bit,1))) { m->rotate_bits=get_bits(d,&bit,5); m->r0=get_signed(d,&bit,m->rotate_bits); m->r1=get_signed(d,&bit,m->rotate_bits); }
+    unsigned n=get_bits(d,&bit,5); m->tx=get_signed(d,&bit,n); m->ty=get_signed(d,&bit,n);
+    return (bit+7)/8;
+}
+static void write_matrix(BitWriter *w,const Matrix *m) {
+    put_bits(w,(uint32_t)m->scale,1);
+    if (m->scale) { put_bits(w,m->scale_bits,5); put_signed(w,m->sx,m->scale_bits); put_signed(w,m->sy,m->scale_bits); }
+    put_bits(w,(uint32_t)m->rotate,1);
+    if (m->rotate) { put_bits(w,m->rotate_bits,5); put_signed(w,m->r0,m->rotate_bits); put_signed(w,m->r1,m->rotate_bits); }
+    unsigned n=signed_bits(m->tx,m->ty); put_bits(w,n,5); put_signed(w,m->tx,n); put_signed(w,m->ty,n);
+    align_bits(w);
+}
+static void put_tag(BitWriter *w,unsigned code,const unsigned char *body,size_t length) {
+    align_bits(w);
+    if (length<0x3f) { w->d[w->size++]=(unsigned char)(code<<6|length); w->d[w->size++]=(unsigned char)((code<<6|length)>>8); }
+    else {
+        w->d[w->size++]=(unsigned char)(code<<6|0x3f); w->d[w->size++]=(unsigned char)((code<<6|0x3f)>>8);
+        for (int i=0;i<4;++i) w->d[w->size++]=(unsigned char)(length>>(8*i));
+    }
+    memcpy(w->d+w->size,body,length); w->size+=length; w->bits=w->size*8;
+}
+/* A PlaceObject2 of a named cell: its matrix, where the matrix is, and its depth. */
+typedef struct { size_t tag, end, body, matrix_at, matrix_end; unsigned depth; Matrix m; } Cell;
+static int find_cell(const unsigned char *d,size_t from,size_t to,const char *name,Cell *c) {
+    unsigned code; size_t body,length,next; size_t n=strlen(name)+1;
+    for (size_t p=from;(next=swf_tag(d,p,to,&code,&body,&length));p=next) {
+        if (code==0) break;
+        if (code!=26 || length<n+3 || memcmp(d+body+length-n,name,n)) continue;
+        unsigned flags=d[body];
+        if ((flags&0x26)!=0x26 || (flags&~0x26u)) return 0; /* char, matrix, name only (as the cells are) */
+        c->tag=p; c->end=next; c->body=body; c->depth=d[body+1]|d[body+2]<<8;
+        c->matrix_at=body+5; c->matrix_end=c->matrix_at+read_matrix(d+c->matrix_at,&c->m);
+        return c->matrix_end<next;
+    }
+    return 0;
+}
+static int top_menu_patch(const unsigned char *d,size_t size,unsigned char *out,size_t *out_size) {
+    enum { IconX=560, IconY=0, Size=80*20 }; /* the Hunter's Mark in MENU_Common_00100; 80 px */
+    /* Its blue-grey frame in the brown of the row's icons: per channel x mult/256 + add, fitted to
+     * the sheet's empty brown frame (the same frame, cell 2,9) around the mark. */
+    static const int16_t mult[4]={230,166,136,256}, add[4]={18,13,10,0};
+    if (size<16 || (memcmp(d,"GFX",3) && memcmp(d,"FWS",3))) return 0;
+    size_t start=8+(5+4*(d[8]>>3)+7)/8+4;
+    unsigned code; size_t body,length,next, sprite=0, sprite_body=0, sprite_length=0;
+    unsigned max_id=0; int sheet=-1;
+    Cell c1,c2,c3;
+    for (size_t pos=start;(next=swf_tag(d,pos,size,&code,&body,&length));pos=next) {
+        if (code==0) break;
+        if ((code==2 || code==22 || code==32 || code==83 || code==39 || code==37 || code==11 || code==33 || code==1009) && length>=2) {
+            unsigned id=d[body]|d[body+1]<<8; if (id>max_id) max_id=id;
+        }
+        if (code==1009 && length>11 && d[body+10]==17 && body+11+17<=next && !memcmp(d+body+11,"MENU_Common_00100",17))
+            sheet=d[body]|d[body+1]<<8;
+        if (code==39 && length>4 && !sprite && find_cell(d,body+4,body+length,"Item_0_2",&c2)) {
+            if (!find_cell(d,body+4,body+length,"Item_0_1",&c1) || find_cell(d,body+4,body+length,"Item_0_3",&c3)) return 0;
+            sprite=pos; sprite_body=body; sprite_length=length;
+        }
+    }
+    if (!sprite || sheet<0 || max_id>=0xfffe) return 0;
+    /* depths of the icon and the cell: free in the sprite */
+    for (size_t p=sprite_body+4;(next=swf_tag(d,p,sprite_body+sprite_length,&code,&body,&length));p=next) {
+        if (code==0) break;
+        if ((code==26 || code==70) && length>=3) {
+            unsigned depth=d[body+(code==70 ? 2 : 1)]|d[body+(code==70 ? 3 : 2)]<<8;
+            if (depth==c2.depth+1 || depth==c2.depth+2) return 0;
+        }
+    }
+    unsigned shape_id=max_id+1;
+    unsigned char tmp[256];
+    BitWriter w={out,0,0};
+    memcpy(out,d,sprite); w.size=sprite; w.bits=sprite*8;
+    /* the icon: a square of Size twips filled from the sheet, the Hunter's Mark at its origin */
+    BitWriter s={tmp,0,0};
+    tmp[0]=(unsigned char)shape_id; tmp[1]=(unsigned char)(shape_id>>8); s.size=2; s.bits=16;
+    unsigned n=signed_bits(0,Size); put_bits(&s,n,5); put_signed(&s,0,n); put_signed(&s,Size,n); put_signed(&s,0,n); put_signed(&s,Size,n); align_bits(&s);
+    tmp[s.size++]=1; tmp[s.size++]=0x41; tmp[s.size++]=(unsigned char)sheet; tmp[s.size++]=(unsigned char)(sheet>>8); s.bits=s.size*8;
+    Matrix fill={.scale=1,.scale_bits=23,.sx=20<<16,.sy=20<<16,.tx=-IconX*20,.ty=-IconY*20};
+    write_matrix(&s,&fill);
+    tmp[s.size++]=0; s.bits=s.size*8; /* no line styles */
+    put_bits(&s,1,4); put_bits(&s,0,4);               /* fill bits 1, line bits 0 */
+    put_bits(&s,0,1); put_bits(&s,0x05,5);            /* style change: fill style 1, move to */
+    put_bits(&s,1,5); put_signed(&s,0,1); put_signed(&s,0,1);
+    put_bits(&s,1,1);                                 /* fill style 1 = 1 */
+    static const int32_t edges[4][2]={{Size,0},{0,Size},{-Size,0},{0,-Size}};
+    for (int i=0;i<4;++i) {
+        int32_t v=edges[i][0] ? edges[i][0] : edges[i][1];
+        unsigned b=signed_bits(v,0);
+        put_bits(&s,3,2); put_bits(&s,b-2,4); put_bits(&s,0,1); put_bits(&s,edges[i][1]!=0,1); put_signed(&s,v,b);
+    }
+    put_bits(&s,0,6); align_bits(&s);
+    put_tag(&w,2,tmp,s.size);
+    /* the sprite: its tags up to Item_0_2, the icon (under the cell), the new cell, the rest */
+    size_t sprite_header=w.size;
+    put_tag(&w,39,d+sprite_body,0x3f); /* the length is set below */
+    w.size=sprite_header+6; memcpy(out+w.size,d+sprite_body,c2.end-sprite_body); w.size+=c2.end-sprite_body; w.bits=w.size*8;
+    Matrix cell=c2.m; cell.tx+=c2.m.tx-c1.m.tx;
+    s=(BitWriter){tmp,0,0};
+    tmp[s.size++]=0x0e; tmp[s.size++]=(unsigned char)(c2.depth+1); tmp[s.size++]=(unsigned char)((c2.depth+1)>>8);
+    tmp[s.size++]=(unsigned char)shape_id; tmp[s.size++]=(unsigned char)(shape_id>>8); s.bits=s.size*8;
+    Matrix at={.tx=cell.tx,.ty=cell.ty}; write_matrix(&s,&at);
+    put_bits(&s,3,2); put_bits(&s,10,4); /* CXFORMWITHALPHA: add and mult terms, 10 bits each */
+    for (int i=0;i<4;++i) put_signed(&s,mult[i],10);
+    for (int i=0;i<4;++i) put_signed(&s,add[i],10);
+    align_bits(&s);
+    put_tag(&w,26,tmp,s.size);
+    s=(BitWriter){tmp,0,0};
+    memcpy(tmp,d+c2.body,5); tmp[1]=(unsigned char)(c2.depth+2); tmp[2]=(unsigned char)((c2.depth+2)>>8); s.size=5; s.bits=40;
+    write_matrix(&s,&cell);
+    memcpy(tmp+s.size,"Item_0_3",9); s.size+=9;
+    put_tag(&w,26,tmp,s.size);
+    size_t rest=sprite_body+sprite_length-c2.end;
+    memcpy(out+w.size,d+c2.end,rest); w.size+=rest;
+    size_t new_length=w.size-sprite_header-6;
+    for (int i=0;i<4;++i) out[sprite_header+2+i]=(unsigned char)(new_length>>(8*i));
+    size_t tail=size-(sprite_body+sprite_length);
+    memcpy(out+w.size,d+sprite_body+sprite_length,tail); w.size+=tail;
+    for (int i=0;i<4;++i) out[4+i]=(unsigned char)(w.size>>(8*i));
+    *out_size=w.size;
+    return 1;
+}
+static void top_menu_prepare(const char *app0,const char *user) {
+    char source[600];
+    snprintf(source,sizeof(source),"%s/dvdroot_ps4/menu/ingametop.gfx",app0);
+    FILE *f=fopen(source,"rb");
+    if (!f) return;
+    unsigned char *d=NULL, *out=NULL; size_t size=0, out_size=0;
+    if (!fseek(f,0,SEEK_END)) {
+        long n=ftell(f);
+        if (n>0 && n<(1<<24) && !fseek(f,0,SEEK_SET) && (d=malloc((size_t)n)) && fread(d,1,(size_t)n,f)==(size_t)n) size=(size_t)n;
+    }
+    fclose(f);
+    if (size && (out=malloc(size+1024)) && top_menu_patch(d,size,out,&out_size)) {
+        snprintf(top_menu_copy,sizeof(top_menu_copy),"%s/ingametop-saves.gfx",user);
+        FILE *o=fopen(top_menu_copy,"wb");
+        top_menu_fixed = o && fwrite(out,1,out_size,o)==out_size;
+        if (o && fclose(o)) top_menu_fixed=0;
+    }
+    if (!top_menu_fixed) printf("Runtime: menu/ingametop.gfx is not the expected one; the pause menu gets no \"Saves\"\n");
+    free(d); free(out);
+}
+static int top_menu_path(const char *guest) {
+    size_t n=strlen(guest), m=strlen("menu/ingametop.gfx");
+    return top_menu_fixed && n>=m && !strcasecmp(guest+n-m,"menu/ingametop.gfx") && (n==m || guest[n-m-1]=='/');
+}
 static char user_root[512]="user";
 const char *runtime_file_user_dir(void) { return user_root; }
 void runtime_file_configure(const char *app0,const char *user) {
@@ -196,6 +379,7 @@ void runtime_file_configure(const char *app0,const char *user) {
         runtime_file_mount(guest,path);
     }
     menu_layout_prepare(app0,user);
+    top_menu_prepare(app0,user);
 }
 /* Resolve a guest path to a host path; returns 0 or a host errno. */
 static int translate(const char *guest,char *out,size_t size) {
@@ -405,7 +589,27 @@ static void sync_directory(const char *file) {
     int d=open(dir,O_RDONLY|O_DIRECTORY|O_CLOEXEC);
     if (d>=0) { fsync(d); close(d); }
 }
-static int commit_file(const File *f) {
+/* bbport: save copies (runtime_savecopies.c). The gate keeps the save folders still while one is
+ * copied: commits, renames and deletions there wait for it. Frozen (a copy is being loaded and
+ * the game goes back to the title screen), they change nothing and report success. */
+static HostMutex save_gate=HOST_MUTEX_INIT;
+static volatile int saves_frozen;
+int runtime_file_saves_hold(void) {
+    host_lock(&save_gate);
+    int writers=0;
+    host_lock(&lock);
+    for (int i=3;i<MAX_FILES;++i) writers+=files[i].used && files[i].temp;
+    host_unlock(&lock);
+    return writers;
+}
+void runtime_file_saves_release(void) { host_unlock(&save_gate); }
+void runtime_file_saves_freeze(int on) {
+    host_lock(&save_gate);
+    saves_frozen=on;
+    host_unlock(&save_gate);
+    if (on) puts("Runtime: save files frozen (a save copy is being loaded)");
+}
+static int commit_file_ungated(const File *f) {
     if (!f->dirty) { close(f->host); unlink(f->temp); return 0; } /* opened for writing, not written */
     int e=fsync(f->host) ? errno : 0;
     close(f->host);
@@ -417,6 +621,14 @@ static int commit_file(const File *f) {
     }
     sync_directory(f->commit);
     return 0;
+}
+static int commit_file(const File *f) {
+    host_lock(&save_gate);
+    int r;
+    if (saves_frozen) { close(f->host); unlink(f->temp); r=0; }
+    else r=commit_file_ungated(f);
+    host_unlock(&save_gate);
+    return r;
 }
 /* All operations return >=0 or -(host errno); wrappers adapt the convention. */
 static int64_t do_open(const char *guest,int flags,int mode) {
@@ -430,6 +642,7 @@ static int64_t do_open(const char *guest,int flags,int mode) {
     snprintf(current,sizeof(current),"%s",path);
     if (save_path(guest)) current_copy(current,sizeof(current),0);
     if (!(flags&3) && menu_layout_path(guest)) snprintf(current,sizeof(current),"%s",menu_layout_copy);
+    if (!(flags&3) && top_menu_path(guest)) snprintf(current,sizeof(current),"%s",top_menu_copy);
     int host=-1;
 #ifdef _WIN32
     /* Windows cannot open a directory as a descriptor: list it, keep no host descriptor. */
@@ -634,8 +847,11 @@ static int64_t path_op(const char *guest,int op,int mode) {
     char path[1024];
     int e=translate(guest,path,sizeof(path));
     if (e) return -e;
-    int r= op==0 ? mkdir(path,mode ? mode : 0755) : op==1 ? rmdir(path) : unlink(path);
+    const int gated=save_path(guest);
+    if (gated) host_lock(&save_gate);
+    int r= gated && saves_frozen ? 0 : op==0 ? mkdir(path,mode ? mode : 0755) : op==1 ? rmdir(path) : unlink(path);
     r=r ? -errno : 0;
+    if (gated) host_unlock(&save_gate);
     if (save_trace() && save_path(guest)) printf("Save trace: %s(%s) -> %d\n",op==0 ? "mkdir" : op==1 ? "rmdir" : "unlink",guest,r);
     return r;
 }
@@ -645,7 +861,10 @@ static int64_t do_rename(const char *from,const char *to) {
     int e=translate(from,a,sizeof(a));
     if (!e) e=translate(to,b,sizeof(b));
     if (e) return -e;
-    int r=rename(a,b) ? -errno : 0;
+    const int gated=save_path(from) || save_path(to);
+    if (gated) host_lock(&save_gate);
+    int r= gated && saves_frozen ? 0 : rename(a,b) ? -errno : 0;
+    if (gated) host_unlock(&save_gate);
     if (save_trace() && (save_path(from) || save_path(to))) printf("Save trace: rename(%s, %s) -> %d\n",from,to,r);
     return r;
 }
