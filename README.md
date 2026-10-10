@@ -12,9 +12,12 @@
 
 **[Download v1.02](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.02/bloodborne-win-native-v1.02.zip)** (Windows 10/11, 116 MB)
 
-[![Bloodborne Windows Native on YouTube](media/video-preview.jpg)](https://www.youtube.com/watch?v=JUkWqngg8r4)
+<p>
+<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: new video"></a>
+<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: first video"></a>
+</p>
 
-**[▶ Watch on YouTube](https://www.youtube.com/watch?v=JUkWqngg8r4)**
+**▶ Watch on YouTube: [new video](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [first video](https://www.youtube.com/watch?v=JUkWqngg8r4)**
 
 A native Windows port of *Bloodborne* (PlayStation 4, version 1.09), based on
 **[bbport](https://github.com/deadinside28/bloodborne_pc)** by deadinside28.
