@@ -6,6 +6,7 @@
  * Metadata lives beside the directory so the guest's own files are untouched. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "gpu/shim/bbport_save_copies.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +102,7 @@ static void bloodborne_sound_hack(void) {
 }
 void runtime_savedata_configure(const char *title) {
     if (title && *title) snprintf(title_id,sizeof(title_id),"%s",title);
+    runtime_saves_startup(title_id); /* a save copy chosen in the menu, before anything reads the save */
     bloodborne_sound_hack();
 }
 
@@ -189,6 +191,7 @@ static int32_t mount(int32_t user, const char *title, const DirName *dir, uint32
     host_unlock(&lock);
     printf("Runtime: save data '%s' mounted at %s (%s%s)\n",dir->data,result->point.data,
            exists ? "existing" : "created",(mode & MODE_RDONLY) ? ", read-only" : "");
+    runtime_saves_mounted((mode & MODE_RDONLY)!=0); /* a save copy being loaded goes in here */
     return 0;
 }
 static ABI int32_t save_mount(const Mount1 *m, MountResult *result) {

@@ -66,6 +66,12 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.mouse_sensitivity = Clamp(f, 0.05f, 20.0f);
     } else if (key == "mouse_invert_y") {
         v.mouse_invert_y = i != 0;
+    } else if (key == "save_copies") {
+        v.save_copies = std::clamp(i, 1, 50);
+    } else if (key == "quicksave_key") {
+        v.quicksave_key = value;
+    } else if (key == "quickload_key") {
+        v.quickload_key = value;
     } else if (key == "menu_pos") {
         float x = -1.0f, y = -1.0f;
         if (std::sscanf(value.c_str(), "%f,%f", &x, &y) == 2 && x >= 0.0f && x <= 1.0f && y >= 0.0f &&
@@ -258,6 +264,9 @@ void Save() {
     put("mouse_camera", flag(v.mouse_camera));
     put("mouse_sensitivity", fixed(v.mouse_sensitivity, 2));
     put("mouse_invert_y", flag(v.mouse_invert_y));
+    put("save_copies", std::to_string(v.save_copies.load()));
+    put("quicksave_key", v.quicksave_key);
+    put("quickload_key", v.quickload_key);
     put("fsr4_auto_exposure", flag(v.fsr4_auto_exposure));
     put("fsr4_invert_jitter", flag(v.fsr4_invert_jitter));
     // Read by patches.py at start.

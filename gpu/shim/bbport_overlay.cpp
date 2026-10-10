@@ -16,6 +16,8 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include "bbport_game_menu.h"
+#include "bbport_save_menu.h"
 #include "bbport_settings.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -266,9 +268,10 @@ State state;
 
 /// One setting row. Returns -1 / +1 when the value is to step back / forward (keys, Cross, a
 /// click on either side of the value), 0 otherwise. A slider row also takes a drag: `drag`
-/// receives the fraction under the mouse.
+/// receives the fraction under the mouse. An action row (`action`) has no value to step: its
+/// `value` is a detail on the right, and only Cross / Enter / a click (1) act.
 int Row(const char* id, const char* label, const char* value, const char* hint, bool enabled,
-        float slider = -1.0f, float* drag = nullptr) {
+        float slider = -1.0f, float* drag = nullptr, bool action = false) {
     ImGui::PushID(id);
     const int index = state.rows++;
     state.enabled.push_back(enabled);
@@ -314,7 +317,7 @@ int Row(const char* id, const char* label, const char* value, const char* hint, 
     const float col0 = at.x + width * 0.56f, col1 = at.x + width - S(28.0f);
     const float col_mid = (col0 + col1) * 0.5f;
     int step = 0;
-    if (enabled && value) {
+    if (enabled && value && !action) {
         const ImU32 arrow = focused ? Gold(1.0f) : Gold(0.55f);
         const float h = S(7.0f);
         draw->AddTriangleFilled(ImVec2(col0, mid_y), ImVec2(col0 + h, mid_y - h),
@@ -342,12 +345,16 @@ int Row(const char* id, const char* label, const char* value, const char* hint, 
                 *drag = std::clamp((x - b0) / (b1 - b0), 0.0f, 1.0f);
             }
         }
+    } else if (value && action) {
+        const ImVec2 size = ImGui::CalcTextSize(value);
+        draw->AddText(ImVec2(col1 - size.x, mid_y - size.y * 0.5f), !enabled ? Dim() : focused ? Plain() : Dim(),
+                      value);
     } else if (value) {
         const ImVec2 size = ImGui::CalcTextSize(value);
         draw->AddText(ImVec2(col_mid - size.x * 0.5f, mid_y - size.y * 0.5f),
                       !enabled ? Dim() : focused ? Bright() : Plain(), value);
     }
-    if (enabled && focused) {
+    if (enabled && focused && !action) {
         if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft) ||
             ImGui::IsKeyPressed(ImGuiKey_GamepadLStickLeft)) {
             step = -1;
@@ -357,7 +364,9 @@ int Row(const char* id, const char* label, const char* value, const char* hint, 
             step = 1;
         }
     }
-    if (enabled && pressed && slider < 0.0f) {
+    if (enabled && pressed && action) {
+        step = 1;
+    } else if (enabled && pressed && slider < 0.0f) {
         step = ImGui::GetIO().MousePos.x < col_mid && ImGui::GetIO().MousePos.x >= col0 - S(12.0f) ? -1 : 1;
     } else if (focused && state.activate) {
         step = 1;
@@ -666,6 +675,110 @@ void AdvancedTab() {
            upscaler_on, [&](int i) { s.debug_view = i; });
 }
 
+/// A section title between rows (not focusable).
+void Heading(const char* text) {
+    ImGui::Dummy(ImVec2(0.0f, S(10.0f)));
+    ImGui::Indent(S(28.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(Gold(0.85f)));
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+    ImGui::Unindent(S(28.0f));
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(at.x + S(20.0f), at.y + S(2.0f)),
+                                        ImVec2(at.x + width - S(20.0f), at.y + S(2.0f)), Gold(0.25f), S(1.0f));
+    ImGui::Dummy(ImVec2(0.0f, S(6.0f)));
+}
+
+/// Copies of the save (bbport_save_menu.cpp), as in the game's pause menu: save one; load the
+/// game's own save or one of the player's copies (a second press confirms).
+void SavesTab() {
+    static std::string confirm; // the row pressed once
+    if (Row("save_copy", T("Save", "Сохранить"), BbSaveMenu::Busy() ? T("Saving...", "Сохранение...") : nullptr,
+            T("A copy of your progress as it is now (also the F5 key). The 15 newest are kept.",
+              "Копия прогресса в нынешнем виде (также клавиша F5). Хранятся 15 последних."),
+            !BbSaveMenu::Busy(), -1.0f, nullptr, true) != 0) {
+        BbSaveMenu::Save();
+        confirm.clear();
+    }
+    // The folder and the game's save, twice a second while the tab is shown.
+    static auto listed = std::chrono::steady_clock::time_point{};
+    static std::vector<RuntimeSaveCopy> copies;
+    static RuntimeSaveCopy undo{};
+    static bool have_undo = false, have_current = false;
+    static unsigned current_place = 0;
+    static char current_when[32] = "";
+    if (const auto now = std::chrono::steady_clock::now(); now - listed > std::chrono::milliseconds(500)) {
+        copies = BbSaveMenu::List(true);
+        have_undo = false;
+        for (const auto& c : BbSaveMenu::List()) {
+            if (!c.manual) {
+                undo = c;
+                have_undo = true;
+                break;
+            }
+        }
+        have_current = runtime_saves_current(&current_place, current_when, sizeof(current_when)) == 0;
+        listed = now;
+    }
+    // "2026-10-10 14:30:22" -> "10.10 14:30"
+    const auto short_time = [](const std::string& when) {
+        return when.size() >= 16 ? when.substr(8, 2) + "." + when.substr(5, 2) + " " + when.substr(11, 5) : when;
+    };
+    // Rows: where (the game's place name) on the left, when on the right; a second press loads.
+    // Not while a copy is loading. On a loading screen a load waits for the character to be back.
+    const bool can_load = BbSaveMenu::CanLoad();
+    if (!can_load && confirm.starts_with("#")) {
+        confirm.clear();
+    }
+    const auto load_row = [&](const std::string& name, const std::string& label, const std::string& value,
+                              const char* hint) {
+        const bool armed = confirm == "#" + name;
+        if (Row(("load" + name).c_str(), label.c_str(),
+                armed ? T("Press again to load", "Нажмите ещё раз, чтобы загрузить") : value.c_str(), hint,
+                can_load, -1.0f, nullptr, true) != 0) {
+            if (armed) {
+                BbSaveMenu::LoadLater(name);
+                SetOpen(false);
+            }
+            confirm = armed ? std::string{} : "#" + name;
+        }
+    };
+    const auto titled = [](const char* title, const std::string& place) {
+        return place.empty() ? std::string(title) : std::string(title) + ": " + place;
+    };
+    Heading(T("Load", "Загрузить"));
+    if (!can_load || !BbGameMenu::InPlay()) {
+        ImGui::Indent(S(28.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(Gold(0.55f)));
+        ImGui::TextUnformatted(runtime_saves_loading()
+                                   ? T("Loading a copy...", "Идёт загрузка копии...")
+                                   : T("The game is loading: a copy chosen now loads right after it",
+                                       "Игра загружается: выбранная сейчас копия загрузится сразу после этого"));
+        ImGui::PopStyleColor();
+        ImGui::Unindent(S(28.0f));
+    }
+    load_row({}, titled(T("Game's autosave", "Автосохранение игры"),
+                        have_current ? BbGameMenu::PlaceName(current_place) : std::string{}),
+             have_current ? short_time(current_when) : std::string{},
+             T("Back to the game's last own save: the game goes to the title screen and continues from it.",
+               "Вернуться к последнему сохранению самой игры: игра выйдет в главное меню и продолжит с него."));
+    if (have_undo) {
+        load_row(undo.name, titled(T("Undo the last load", "Отменить последнюю загрузку"), BbGameMenu::PlaceName(undo.place)),
+                 short_time(undo.when),
+                 T("Back to how it was before the last load (press twice).",
+                   "Вернуться к тому, как было до последней загрузки (нажмите дважды)."));
+    }
+    const char* hint = T("The game goes to the title screen and continues from this copy (press twice). "
+                         "F8 loads your newest copy.",
+                         "Игра выйдет в главное меню и продолжит с этой копии (нажмите дважды). "
+                         "F8 загружает вашу последнюю копию.");
+    for (const auto& c : copies) {
+        const std::string place = BbGameMenu::PlaceName(c.place);
+        load_row(c.name, place.empty() ? T("Save", "Сохранение") : place, short_time(c.when), hint);
+    }
+}
+
 } // namespace Ui
 
 void Menu() {
@@ -674,9 +787,9 @@ void Menu() {
     const ImVec2 display = io.DisplaySize;
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, 165));
 
-    static const char* tab_en[] = {"Display", "Upscaler", "Game effects", "Advanced"};
-    static const char* tab_ru[] = {"Изображение", "Апскейлер", "Эффекты игры", "Дополнительно"};
-    constexpr int tabs = 4;
+    static const char* tab_en[] = {"Display", "Upscaler", "Game effects", "Advanced", "Saves"};
+    static const char* tab_ru[] = {"Изображение", "Апскейлер", "Эффекты игры", "Дополнительно", "Сохранения"};
+    constexpr int tabs = 5;
     if (focus_request) {
         focus_request = false;
         state.focus_first = true;
@@ -810,7 +923,8 @@ void Menu() {
     case 0: DisplayTab(); break;
     case 1: UpscalerTab(); break;
     case 2: EffectsTab(); break;
-    default: AdvancedTab(); break;
+    case 3: AdvancedTab(); break;
+    default: SavesTab(); break;
     }
     if (RestartNeeded()) {
         ImGui::Spacing();
@@ -941,6 +1055,30 @@ void FpsCounter() {
         ImGui::Text("CPU %.0f%%  RAM %.1f GB", cpu_percent, ram_gb);
     }
     ImGui::End();
+}
+
+/// The save copies' message (bbport_save_menu.cpp), top centre.
+void SaveMessage() {
+    float alpha = 1.0f;
+    const std::string text = BbSaveMenu::Message(&alpha);
+    if (text.empty()) {
+        return;
+    }
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + 40.0f * base_scale),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.6f * alpha);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f * base_scale, 10.0f * base_scale));
+    ImGui::PushFont(serif_font, 22.0f);
+    ImGui::Begin("##save_message", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::End();
+    ImGui::PopFont();
+    ImGui::PopStyleVar(2);
 }
 
 void TextPrompt() {
@@ -1121,6 +1259,9 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
+        if (!is_open && !prompt_active && BbSaveMenu::HandleKey(event)) { // F5 / F8: save copies
+            return true;
+        }
         if (down && !event.key.repeat &&
             (event.key.key == SDLK_INSERT || (is_open && event.key.key == SDLK_ESCAPE))) {
             SetOpen(event.key.key == SDLK_INSERT ? !is_open : false);
@@ -1205,7 +1346,9 @@ bool HandleEvent(const SDL_Event& event) {
 }
 
 bool Visible() {
-    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps);
+    float alpha = 0.0f;
+    return initialized && (menu_open || prompt_active || BbSettings::Get().show_fps ||
+                           !BbSaveMenu::Message(&alpha).empty());
 }
 
 bool MenuOpen() {
@@ -1257,6 +1400,7 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     if (prompt_active && !menu_open) {
         TextPrompt();
     }
+    SaveMessage();
     ImGui::Render();
 
     const vk::RenderingAttachmentInfo attachment{

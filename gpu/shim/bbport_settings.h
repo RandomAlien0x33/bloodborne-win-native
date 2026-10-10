@@ -6,6 +6,7 @@
 #pragma once
 
 #include <atomic>
+#include <string>
 
 namespace BbSettings {
 
@@ -73,6 +74,10 @@ struct Values {
     std::atomic<bool> mouse_camera{true};
     std::atomic<float> mouse_sensitivity{1.0f};
     std::atomic<bool> mouse_invert_y{false};
+    /// Save copies (bbport_save_menu.cpp): how many the player's copies are kept, and the
+    /// keys (SDL key names, modifiers with '+': "F5", "Ctrl+S"; empty: none). Read at start.
+    std::atomic<int> save_copies{15};
+    std::string quicksave_key{"F5"}, quickload_key{"F8"};
     /// The settings menu's position (fraction of the screen), -1 until it is moved.
     std::atomic<float> menu_x{-1.0f}, menu_y{-1.0f};
     // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.

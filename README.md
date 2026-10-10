@@ -2,9 +2,15 @@
 
 # Bloodborne Windows Native
 
-### 🖱️ Mouse and keyboard support · DLSS · FSR 4 · up to 4K
+### 🖱️ Mouse and keyboard · 💾 Save anywhere · DLSS · FSR 4 · up to 4K
 
-**[Download v1.01](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.01/bloodborne-win-native-v1.01.zip)** (Windows 10/11, 116 MB)
+- **Mouse and keyboard:** the mouse turns the camera directly, as in PC games; every key can be
+  rebound.
+- **Save copies:** save your progress at any moment (pause menu → **Saves**, or **F5**) and load
+  any copy back (**F8**) without restarting the game.
+- **DLSS, FSR 4, FSR 3.1**, output up to 4K, unlocked frame rate.
+
+**[Download v1.02](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.02/bloodborne-win-native-v1.02.zip)** (Windows 10/11, 116 MB)
 
 [![Bloodborne Windows Native on YouTube](media/video-preview.jpg)](https://www.youtube.com/watch?v=JUkWqngg8r4)
 
@@ -43,6 +49,7 @@ translated to Vulkan.
   port's menu (**Insert** or L3+R3).
 - **Mouse and keyboard:** the mouse turns the camera directly, as in PC games.
 - **Memory modes:** Classic (most tested) and Hybrid (faster on graphics cards).
+- **Save copies** from the pause menu and with F5 / F8 (see [Saves](#saves)).
 - Safe saves, mods without changing the game files, game effects on and off.
 
 ## Requirements
@@ -53,7 +60,7 @@ translated to Vulkan.
 
 ## Getting started
 
-1. [Download v1.01](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.01/bloodborne-win-native-v1.01.zip) and unpack it.
+1. [Download v1.02](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.02/bloodborne-win-native-v1.02.zip) and unpack it.
 2. In `bbport.ini` set the game folder:
    ```ini
    game_dir=D:\Games\CUSA03173
@@ -78,12 +85,29 @@ downloads it from NVIDIA's DLSS SDK (it is not part of this repository).
 | Z / C | L3 / R3 |
 | I / K / J / L | d-pad |
 | Enter / Tab | Options / touchpad |
+| F5 / F8 | save a copy / load the newest copy (press twice) |
 | F11 | fullscreen |
 | Insert | the port's menu |
 | click in the window / hold Left Alt | the window holds the cursor / frees it |
 
 Gamepads work through SDL. Any key can be rebound in `bbport.ini`: `key.r1=3,mouse_left`,
 `pad.cross=a`.
+
+## Saves
+
+Bloodborne has a single autosave. The port adds copies of your own:
+
+- **Pause menu → Saves** (after System): **Save** copies your progress as it is now; **Load**
+  lists the game's autosave and your copies, each with the date and the place.
+- **F5** saves a copy, **F8** loads the newest one. The port's menu (**Insert**) has a **Saves**
+  tab as well.
+- A load needs no restart: the game goes to the title screen and continues from the copy by
+  itself, in a few seconds.
+- A load row loads on the second press, so a stray press does nothing. A load asked for during a
+  loading screen waits until it ends.
+- **Undo the last load** brings back the state from before the last load.
+- The 15 newest copies are kept, in `user\saves`. Saving a copy never changes the game's own save.
+  In `bbport.ini`: `save_copies` (how many), `quicksave_key`, `quickload_key` (e.g. `Ctrl+S`).
 
 ## Building from source
 

@@ -81,6 +81,10 @@ void runtime_file_report(void);
 void runtime_file_configure(const char *app0, const char *user);
 /* The port's copy of menu/optionsetting.gfx with pop-up lists above the rows is in use. */
 int runtime_file_menu_layout_fixed(void);
+/* The port's copy of menu/ingametop.gfx with a cell for "Saves" is in use. */
+int runtime_file_top_menu_fixed(void);
+/* Presses Cross from delay_ms on for hold_ms (the title screen's Continue after a save copy loads). */
+void runtime_pad_press_cross(unsigned delay_ms,unsigned hold_ms);
 int runtime_file_mount(const char *guest, const char *host);
 void runtime_file_unmount(const char *guest);
 int runtime_file_translate(const char *guest, char *out, size_t size);
@@ -105,6 +109,11 @@ uintptr_t runtime_pad_resolve(const char *name);
 void runtime_pad_report(void);
 uintptr_t runtime_rtc_resolve(const char *name);
 const char *runtime_file_user_dir(void);
+/* bbport: the save gate (runtime_file.c) for save copies (runtime_savecopies.c): hold returns
+ * the number of save files open for writing; freeze (on) makes save writes change nothing. */
+int runtime_file_saves_hold(void);
+void runtime_file_saves_release(void);
+void runtime_file_saves_freeze(int on);
 void runtime_savedata_configure(const char *title);
 uintptr_t runtime_savedata_resolve(const char *name);
 void runtime_savedata_report(void);
