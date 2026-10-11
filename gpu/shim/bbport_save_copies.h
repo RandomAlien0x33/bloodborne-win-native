@@ -19,6 +19,8 @@ typedef struct {
  * is the same as in the newest copy of that kind (the game has not saved since): no new copy, that
  * one's name in name_out. */
 int runtime_saves_copy(int manual, int keep, char *name_out, size_t name_size);
+/* Presses Options from delay_ms on for hold_ms (runtime_pad.c). */
+void runtime_pad_press_options(unsigned delay_ms, unsigned hold_ms);
 /* The save as it is now (the game's own): the place of the character played and when it was saved
  * last (YYYY-MM-DD HH:MM:SS). 0 when there is one. */
 int runtime_saves_current(unsigned *place, char *when, size_t when_size);

@@ -627,13 +627,18 @@ static void touch_ids(PadData *d) {
     d->touch_held_time=d->touch_count ? (uint32_t)(d->timestamp-since) : 0;
 }
 /* bbport: a press made by the port (runtime_pad_press_cross: "Continue" after a save copy is
- * loaded, runtime_savecopies.c), from `delay_ms` on for `hold_ms`. */
+ * loaded, runtime_savecopies.c; runtime_pad_press_options: closing the pause menu after "Save"),
+ * from `delay_ms` on for `hold_ms`. */
 static volatile uint64_t tap_from, tap_until;
-void runtime_pad_press_cross(unsigned delay_ms,unsigned hold_ms) {
+static volatile uint32_t tap_buttons;
+static void press(uint32_t buttons,unsigned delay_ms,unsigned hold_ms) {
     const uint64_t now=now_us();
+    tap_buttons=buttons;
     tap_until=now+(uint64_t)(delay_ms+hold_ms)*1000u;
     tap_from=now+(uint64_t)delay_ms*1000u;
 }
+void runtime_pad_press_cross(unsigned delay_ms,unsigned hold_ms) { press(BTN_CROSS,delay_ms,hold_ms); }
+void runtime_pad_press_options(unsigned delay_ms,unsigned hold_ms) { press(BTN_OPTIONS,delay_ms,hold_ms); }
 static void sample(PadData *d) {
     sample_host(d);
     if (bbgpu_overlay_captures_input()) return;
@@ -643,7 +648,7 @@ static void sample(PadData *d) {
     d->buttons|=injected.buttons;
     if (tap_until) {
         const uint64_t now=now_us();
-        if (now>=tap_from && now<tap_until) d->buttons|=BTN_CROSS;
+        if (now>=tap_from && now<tap_until) d->buttons|=tap_buttons;
         else if (now>=tap_until) tap_until=0;
     }
     if (injected.touch_side>=0) touch_click(d,injected.touch_side);

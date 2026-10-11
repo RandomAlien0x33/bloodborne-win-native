@@ -85,6 +85,8 @@ int runtime_file_menu_layout_fixed(void);
 int runtime_file_top_menu_fixed(void);
 /* Presses Cross from delay_ms on for hold_ms (the title screen's Continue after a save copy loads). */
 void runtime_pad_press_cross(unsigned delay_ms,unsigned hold_ms);
+/* Presses Options the same way (closing the pause menu after "Save"). */
+void runtime_pad_press_options(unsigned delay_ms,unsigned hold_ms);
 int runtime_file_mount(const char *guest, const char *host);
 void runtime_file_unmount(const char *guest);
 int runtime_file_translate(const char *guest, char *out, size_t size);

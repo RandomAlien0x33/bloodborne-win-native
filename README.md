@@ -10,11 +10,14 @@
   any copy back (**F8**) without restarting the game.
 - **DLSS, FSR 4, FSR 3.1**, output up to 4K, unlocked frame rate.
 
-**[Download v1.02](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.02/bloodborne-win-native-v1.02.zip)** (Windows 10/11, 116 MB)
+**[Download v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip)** (Windows 10/11, 116 MB)
 
-[![Bloodborne Windows Native on YouTube](media/video-preview.jpg)](https://www.youtube.com/watch?v=JUkWqngg8r4)
+<p>
+<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: new video"></a>
+<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: first video"></a>
+</p>
 
-**[▶ Watch on YouTube](https://www.youtube.com/watch?v=JUkWqngg8r4)**
+**▶ Watch on YouTube: [new video](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [first video](https://www.youtube.com/watch?v=JUkWqngg8r4)**
 
 A native Windows port of *Bloodborne* (PlayStation 4, version 1.09), based on
 **[bbport](https://github.com/deadinside28/bloodborne_pc)** by deadinside28.
@@ -60,7 +63,7 @@ translated to Vulkan.
 
 ## Getting started
 
-1. [Download v1.02](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.02/bloodborne-win-native-v1.02.zip) and unpack it.
+1. [Download v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip) and unpack it.
 2. In `bbport.ini` set the game folder:
    ```ini
    game_dir=D:\Games\CUSA03173
@@ -108,6 +111,13 @@ Bloodborne has a single autosave. The port adds copies of your own:
 - **Undo the last load** brings back the state from before the last load.
 - The 15 newest copies are kept, in `user\saves`. Saving a copy never changes the game's own save.
   In `bbport.ini`: `save_copies` (how many), `quicksave_key`, `quickload_key` (e.g. `Ctrl+S`).
+
+![The Saves cell in the pause menu](media/saves-pause-menu.jpg)
+
+<p>
+<img src="media/saves-menu.jpg" width="49%" alt="Saves: Save and Load">
+<img src="media/saves-load.jpg" width="49%" alt="The Load list">
+</p>
 
 ## Building from source
 

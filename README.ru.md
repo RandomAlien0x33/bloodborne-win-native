@@ -10,11 +10,14 @@
   **F5**) и загружайте любую копию (**F8**) без перезапуска игры.
 - **DLSS, FSR 4, FSR 3.1**, вывод до 4K, FPS без ограничения.
 
-**[Скачать v1.02](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.02/bloodborne-win-native-v1.02.zip)** (Windows 10/11, 116 МБ)
+**[Скачать v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip)** (Windows 10/11, 116 МБ)
 
-[![Bloodborne Windows Native на YouTube](media/video-preview.jpg)](https://www.youtube.com/watch?v=JUkWqngg8r4)
+<p>
+<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: новое видео"></a>
+<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: первое видео"></a>
+</p>
 
-**[▶ Смотреть на YouTube](https://www.youtube.com/watch?v=JUkWqngg8r4)**
+**▶ Смотреть на YouTube: [новое видео](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [первое видео](https://www.youtube.com/watch?v=JUkWqngg8r4)**
 
 Нативный порт *Bloodborne* (PlayStation 4, версия 1.09) для Windows на основе
 **[bbport](https://github.com/deadinside28/bloodborne_pc)** от deadinside28.
@@ -60,7 +63,7 @@
 
 ## Как запустить
 
-1. [Скачайте v1.02](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.02/bloodborne-win-native-v1.02.zip) и распакуйте.
+1. [Скачайте v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip) и распакуйте.
 2. Укажите папку игры в `bbport.ini`:
    ```ini
    game_dir=D:\Games\CUSA03173
@@ -109,6 +112,13 @@
 - Хранятся 15 последних копий, в `user\saves`. Сохранение копии не меняет собственное сохранение
   игры. В `bbport.ini`: `save_copies` (сколько хранить), `quicksave_key`, `quickload_key`
   (например, `Ctrl+S`).
+
+![«Сохранения» в меню паузы](media/saves-pause-menu.jpg)
+
+<p>
+<img src="media/saves-menu.jpg" width="49%" alt="Сохранения: Сохранить и Загрузить">
+<img src="media/saves-load.jpg" width="49%" alt="Список загрузки">
+</p>
 
 ## Сборка из исходников
 

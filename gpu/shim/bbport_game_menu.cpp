@@ -25,6 +25,7 @@ extern "C" void* runtime_low_map(size_t size, int prot);
 #include <utility>
 #include <vector>
 
+#include "bbport_save_copies.h"
 #include "bbport_save_menu.h"
 #include "bbport_settings.h"
 
@@ -662,6 +663,8 @@ void DefineSaveTexts() {
 // Load rows: the one pressed once (the game's menu task) and its own text meanwhile.
 enum Answer : u64 { AnswerOwn, AnswerLast, AnswerCopy0 };
 constexpr auto ArmTime = std::chrono::seconds(4);
+/// After "Save", when the port presses Options: the list's decide has run.
+constexpr unsigned SaveCloseDelayMs = 50;
 std::optional<u64> armed;
 std::chrono::steady_clock::time_point armed_time{};
 u32 armed_text = 0;
@@ -710,15 +713,16 @@ const u8 ListDonePrologue[] = {0x48, 0x8b, 0x47, 0x08, 0x83, 0x7f, 0x10, 0x02};
 using ListDoneFn = void (GUEST_ABI *)(void*);
 ListDoneFn list_done_original = nullptr;
 std::atomic<u8*> keep_list{nullptr}; ///< the list the press keeps open
-std::atomic<u8*> leave_list{nullptr}; ///< the list the press leaves for the game (Save)
+std::atomic<u8*> hide_list{nullptr}; ///< the list the press keeps open but faded out (Save)
 
 /// The press keeps its list open (a load row's first press).
 void KeepList(void* arg) {
     keep_list.store(static_cast<u8*>(arg) - 0x48);
 }
-/// The press closes the whole menu, back to the game (Save).
-void LeaveList(void* arg) {
-    leave_list.store(static_cast<u8*>(arg) - 0x48);
+/// The press keeps its list open but leaves it faded out (Save: the port's Options press then
+/// closes the menu, so nothing shows in between).
+void HideList(void* arg) {
+    hide_list.store(static_cast<u8*>(arg) - 0x48);
 }
 GUEST_ABI void ListDoneHook(void* step) {
     u8* list = *reinterpret_cast<u8**>(static_cast<u8*>(step) + 8);
@@ -730,21 +734,10 @@ GUEST_ABI void ListDoneHook(void* step) {
         return;
     }
     expected = list;
-    if (!leave_list.compare_exchange_strong(expected, nullptr)) {
-        list_done_original(step);
+    if (hide_list.compare_exchange_strong(expected, nullptr)) {
         return;
     }
-    // As the cancelled way does (0x1beceb0, then 0x1becd90 with the item's flags): with list+0xd21
-    // set it closes the whole menu, back to the game.
-    list[0xd21] = 1;
-    Game<void (GUEST_ABI *)(void*, int)>(ListActivate)(list, 1);
-    const u64 flags = *reinterpret_cast<u64*>(static_cast<u8*>(step) + 0x10);
-    if (list[0xde4]) {
-        using SetResult = void (GUEST_ABI *)(void*, u64);
-        (*reinterpret_cast<SetResult**>(list))[8](list, flags);
-    } else {
-        *reinterpret_cast<u64*>(list + 0x1c0) = flags;
-    }
+    list_done_original(step);
 }
 
 /// A load row pressed: the first press arms it, a second one within ArmTime loads.
@@ -772,11 +765,14 @@ void* Press(void* out, void* arg, u64 answer, u32 text) {
 }
 
 // Items' actions (called by the game's menu code with the item's argument).
-/// "Save" saves at once and closes the menu, back to the game.
+/// "Save" saves at once; its list stays, faded out, and the port presses Options, so the game
+/// closes the menu its own way. (Closing the whole menu from here, by list+0xd21, left the game
+/// thinking a menu was open: no attacks or dodges afterwards.)
 GUEST_ABI void* SaveAction(void* out, void* arg) {
     if (NewPress()) {
-        LeaveList(arg);
+        HideList(arg);
         Disarm();
+        runtime_pad_press_options(SaveCloseDelayMs, 100);
         BbSaveMenu::Save();
     }
     *static_cast<void**>(out) = nullptr;
@@ -822,7 +818,7 @@ thread_local u8* placeholder_end = nullptr;
 void* ItemList(void* out, void* arg, void (*fill)(void*), u32 title) {
     using Build = void* (GUEST_ABI *)(void*, void*, int);
     keep_list.store(nullptr); // ones a press left unused
-    leave_list.store(nullptr);
+    hide_list.store(nullptr);
     list_fill = fill;
     list_filled = false;
     placeholder_end = nullptr;
