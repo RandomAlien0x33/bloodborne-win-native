@@ -6,18 +6,23 @@
 
 - **Mouse and keyboard:** the mouse turns the camera directly, as in PC games; every key can be
   rebound.
-- **Save copies:** save your progress at any moment (pause menu → **Saves**, or **F5**) and load
-  any copy back (**F8**) without restarting the game.
+- **Save copies:** save your progress at any moment and load any copy back without restarting
+  the game. Where: in the game's own pause menu (Options → **Saves**), in the port's menu
+  (**Insert**, on a gamepad **L3 + R3** → **Saves** tab), or with **F5** (save) / **F8** (load the
+  newest).
+- **Cheats**, switched on and off at once: in the game's System menu (**Cheats**) and in the
+  port's menu (**Cheats** tab). See [Cheats](#cheats).
 - **DLSS, FSR 4, FSR 3.1**, output up to 4K, unlocked frame rate.
 
-**[Download v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip)** (Windows 10/11, 116 MB)
+**[Download v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip)** (Windows 10/11, 116 MB)
 
 <p>
-<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: new video"></a>
-<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: first video"></a>
+<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="32%" alt="Bloodborne Windows Native on YouTube: new video"></a>
+<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="32%" alt="Bloodborne Windows Native on YouTube: first video"></a>
+<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="32%" alt="Bloodborne Windows Native on YouTube: playthrough on this port"></a>
 </p>
 
-**▶ Watch on YouTube: [new video](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [first video](https://www.youtube.com/watch?v=JUkWqngg8r4)**
+**▶ Watch on YouTube: [new video](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [first video](https://www.youtube.com/watch?v=JUkWqngg8r4) · [playthrough on this port](https://www.youtube.com/watch?v=lZabKv_oRko)**
 
 A native Windows port of *Bloodborne* (PlayStation 4, version 1.09), based on
 **[bbport](https://github.com/deadinside28/bloodborne_pc)** by deadinside28.
@@ -40,7 +45,7 @@ translated to Vulkan.
 
 ![](media/menu-environment-en.jpg)
 
-![The port's menu (Insert)](media/menu-port-en.jpg)
+![The port's menu (Insert, or L3 + R3 on a gamepad)](media/menu-port-en.jpg)
 
 ![The game window on Windows 11](media/windows-desktop.jpg)
 
@@ -53,6 +58,8 @@ translated to Vulkan.
 - **Mouse and keyboard:** the mouse turns the camera directly, as in PC games.
 - **Memory modes:** Classic (most tested) and Hybrid (faster on graphics cards).
 - **Save copies** from the pause menu and with F5 / F8 (see [Saves](#saves)).
+- **Cheats** in the System menu and the port's menu (see [Cheats](#cheats)).
+- The port's menus in the game's language (English or Russian).
 - Safe saves, mods without changing the game files, game effects on and off.
 
 ## Requirements
@@ -63,7 +70,7 @@ translated to Vulkan.
 
 ## Getting started
 
-1. [Download v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip) and unpack it.
+1. [Download v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip) and unpack it.
 2. In `bbport.ini` set the game folder:
    ```ini
    game_dir=D:\Games\CUSA03173
@@ -73,8 +80,9 @@ translated to Vulkan.
    Or leave `game_dir` empty and put the `CUSA03173` folder next to `Bloodborne.cmd`.
 3. Start `Bloodborne.cmd`.
 
-DLSS needs NVIDIA's `nvngx_dlss.dll` next to `out\bb-probe.exe`: `bash tools/fetch_dlss.sh`
-downloads it from NVIDIA's DLSS SDK (it is not part of this repository).
+The release package already has NVIDIA's `nvngx_dlss.dll` for DLSS. A build from source needs it
+next to `out\bb-probe.exe`: `bash tools/fetch_dlss.sh` downloads it from NVIDIA's DLSS SDK (it is
+not part of this repository).
 
 ## Controls
 
@@ -90,11 +98,78 @@ downloads it from NVIDIA's DLSS SDK (it is not part of this repository).
 | Enter / Tab | Options / touchpad |
 | F5 / F8 | save a copy / load the newest copy (press twice) |
 | F11 | fullscreen |
-| Insert | the port's menu |
+| **Insert** (gamepad: **L3 + R3** together) | **the port's menu** |
 | click in the window / hold Left Alt | the window holds the cursor / frees it |
 
-Gamepads work through SDL. Any key can be rebound in `bbport.ini`: `key.r1=3,mouse_left`,
-`pad.cross=a`.
+Gamepads work through SDL.
+
+### Rebinding keys
+
+1. Close the game.
+2. Open `bbport.ini` in the port's folder (next to `Bloodborne.cmd`) in Notepad.
+3. Add lines `key.PS4_BUTTON=KEY` at the end. For several keys, separate them with commas (up
+   to 4).
+4. Save the file and start the game.
+
+```ini
+key.r1=mouse_left
+key.r2=mouse_right
+key.circle=Left Shift,mouse_x1
+key.l1=mouse_x2
+key.square=E
+```
+
+Case does not matter. A line replaces all default keys and mouse buttons of that button: after
+`key.l1=mouse_x2` the 1 key is no longer L1. To keep the old key, list it too: `key.l1=1,mouse_x2`.
+`key.` lines do not change the gamepad.
+
+**PS4 buttons** (after `key.`):
+- `cross`: Cross, action (default Space)
+- `circle`: Circle, dodge, run while held (Left Shift)
+- `square`: Square, quick item (E)
+- `triangle`: Triangle, blood vial (Q)
+- `l1`: L1, transform weapon (1)
+- `r1`: R1, attack (3 and the left mouse button)
+- `l2`: L2, firearm (R)
+- `r2`: R2, strong attack (F and the right mouse button)
+- `l3`: L3, jump while running (Z)
+- `r3`: R3, lock on (C and the middle mouse button)
+- `options`: menu (Return)
+- `touchpad`: touchpad, gestures (Tab)
+- `up`, `down`, `left`, `right`: d-pad (I, K, J, L)
+- `move_up`, `move_down`, `move_left`, `move_right`: walking (W, S, A, D)
+- `look_up`, `look_down`, `look_left`, `look_right`: camera (arrow keys)
+
+**Mouse:** `mouse_left`, `mouse_right`, `mouse_middle` (wheel click), `mouse_x1` (side "back"),
+`mouse_x2` (side "forward"). The scroll wheel can't be bound.
+
+**Keyboard** (write exactly like this):
+- letters `A` … `Z`, top-row digits `0` … `9`, `F1` … `F12`
+- `Space`, `Return` (Enter), `Escape`, `Tab`, `Backspace`, `CapsLock`
+- `Left Shift`, `Right Shift`, `Left Ctrl`, `Right Ctrl`, `Right Alt`
+- arrows `Up`, `Down`, `Left`, `Right`
+- `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`
+- numpad: `Keypad 0` … `Keypad 9`, `Keypad Enter`, `Keypad +`, `Keypad -`, `Keypad *`,
+  `Keypad /`, `Keypad .`
+- symbols `` ` `` `-` `=` `[` `]` `;` `'` `.` `/` `\`
+
+The comma can't be bound: it separates keys in a line. Better leave the port's keys (F5, F8,
+F11, Insert, Left Alt) free: they keep doing their own thing.
+
+**Gamepad:** the same with `pad.` instead of `key.`. The right side names the button's place on
+the gamepad, Xbox style:
+- `a`: bottom (Cross on PS), `b`: right (Circle), `x`: left (Square), `y`: top (Triangle)
+- `leftshoulder`, `rightshoulder`: L1, R1
+- `lefttrigger`, `righttrigger`: L2, R2
+- `leftstick`, `rightstick`: L3, R3 (stick clicks)
+- `start`, `back`, `touchpad`
+- `dpup`, `dpdown`, `dpleft`, `dpright`: d-pad
+
+Example: `pad.circle=a` and `pad.cross=b` swap the bottom and right buttons: dodge on the bottom
+one, action on the right one.
+
+If a key does not work, look for a `controls: unknown` line in `out\last-run.log`: it names the
+wrong key.
 
 ## Saves
 
@@ -102,7 +177,7 @@ Bloodborne has a single autosave. The port adds copies of your own:
 
 - **Pause menu → Saves** (after System): **Save** copies your progress as it is now; **Load**
   lists the game's autosave and your copies, each with the date and the place.
-- **F5** saves a copy, **F8** loads the newest one. The port's menu (**Insert**) has a **Saves**
+- **F5** saves a copy, **F8** loads the newest one. The port's menu (**Insert** or **L3 + R3**) has a **Saves**
   tab as well.
 - A load needs no restart: the game goes to the title screen and continues from the copy by
   itself, in a few seconds.
@@ -114,10 +189,30 @@ Bloodborne has a single autosave. The port adds copies of your own:
 
 ![The Saves cell in the pause menu](media/saves-pause-menu.jpg)
 
-<p>
-<img src="media/saves-menu.jpg" width="49%" alt="Saves: Save and Load">
-<img src="media/saves-load.jpg" width="49%" alt="The Load list">
-</p>
+![Saves: Save and Load](media/saves-menu.jpg)
+
+![The Load list](media/saves-load.jpg)
+
+![The Saves tab in the port's menu (Insert)](media/saves-overlay.jpg)
+
+## Cheats
+
+In the game's pause menu: Options → System → **Cheats**; in the port's menu (**Insert**, on a
+gamepad **L3 + R3**): the **Cheats** tab. They work at once, without a restart, and stay on until
+switched off (`bbport.ini`).
+
+| Cheat | What it does |
+|---|---|
+| Infinite health | Health never runs out |
+| Infinite stamina | Stamina never runs out |
+| Infinite Blood Echoes | Blood Echoes are set to 99,999,999 |
+| Infinite Insight | Insight is set to 99,999,999 |
+| Infinite items | A used item's count is set to 20 |
+| One-hit kills | Enemies die from one hit |
+
+> What a cheat has set stays in the save after it is switched off: Blood Echoes, Insight (a lot
+> of Insight changes the world: enemies, sounds, frenzy), item counts. Save a copy (**F5**) before
+> turning cheats on: loading it brings everything back.
 
 ## Building from source
 
@@ -147,3 +242,7 @@ By hand:
 GPL-2.0-or-later (see `LICENSE`). Bundled components keep their own licenses (shadPS4's video
 core: GPL-2.0-or-later; the DLSS bridge in `gpu/dlss_bridge`: MIT). NVIDIA DLSS and AMD FidelityFX
 binaries are not part of this repository.
+
+NVIDIA DLSS is a technology of NVIDIA Corporation. The release package includes NVIDIA's
+`nvngx_dlss.dll`, unmodified, under the NVIDIA DLSS SDK license (`out\LICENSE-DLSS-SDK.txt` in the
+package).

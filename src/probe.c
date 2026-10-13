@@ -299,9 +299,29 @@ static void dump_chain(CONTEXT c) {
         }
     }
 }
+static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS *e);
+/* Libraries loaded during play (NVIDIA's NGX and telemetry, capture hooks such as OBS) may put
+ * their own unhandled-exception filter in place of ours: a crash then goes to Windows Error
+ * Reporting with no call chain in the log. Ours is put back every 2 s; the first replacement
+ * is logged with the module it came from. */
+static void keep_unhandled_filter(void) {
+    static int reported;
+    LPTOP_LEVEL_EXCEPTION_FILTER previous = SetUnhandledExceptionFilter(unhandled_filter);
+    if (previous == unhandled_filter || !previous || reported) return;
+    reported = 1;
+    char module[MAX_PATH] = "unknown module";
+    HMODULE handle;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)previous, &handle))
+        GetModuleFileNameA(handle, module, sizeof(module));
+    fprintf(stderr, "Runtime: the crash handler was replaced by %s; the port's is back\n", module);
+}
 static unsigned __stdcall dump_thread(void *event) {
     for (;;) {
-        WaitForSingleObject(event, INFINITE);
+        if (WaitForSingleObject(event, 2000) == WAIT_TIMEOUT) {
+            keep_unhandled_filter();
+            continue;
+        }
         DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
         unsigned count = 0;
         HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);

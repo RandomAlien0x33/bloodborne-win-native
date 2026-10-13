@@ -31,7 +31,8 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     if (key == "menu_language") {
         if (value == "en") v.menu_language = MenuLanguage::English;
         else if (value == "ru") v.menu_language = MenuLanguage::Russian;
-        else std::printf("Settings: unknown menu_language '%s' (expected en or ru)\n", value.c_str());
+        else if (value == "game") v.menu_language = MenuLanguage::Game;
+        else std::printf("Settings: unknown menu_language '%s' (expected game, en or ru)\n", value.c_str());
     } else if (key == "upscaler") {
         for (int u = 0; u < UpscalerCount; ++u) {
             if (value == UpscalerName(u)) {
@@ -105,6 +106,11 @@ void Set(Values& v, const std::string& key, const std::string& value) {
                 v.effects[e] = i != 0;
             }
         }
+        for (int c = 0; c < CheatCount; ++c) {
+            if (key == Cheats[c].key) {
+                v.cheats[c] = i != 0;
+            }
+        }
     }
 }
 
@@ -115,8 +121,19 @@ Values& Get() {
     return values;
 }
 
+bool Russian() {
+    const auto& v = Get();
+    switch (v.menu_language.load()) {
+    case MenuLanguage::English: return false;
+    case MenuLanguage::Russian: return true;
+    default: break;
+    }
+    const GameLanguage game = v.game_language.load();
+    return game == GameLanguage::Unknown ? v.system_russian.load() : game == GameLanguage::Russian;
+}
+
 const char* MenuText(const char* english, const char* russian) {
-    return Get().menu_language == MenuLanguage::Russian ? russian : english;
+    return Russian() ? russian : english;
 }
 
 void Load() {
@@ -124,7 +141,7 @@ void Load() {
     for (int e = 0; e < EffectCount; ++e) {
         v.effects[e] = Effects[e].default_on;
     }
-    // bbport: the menu's language until one is chosen in it (menu_language in bbport.ini): the
+    // bbport: the language for menu_language=game (the default) until the game's is known: the
     // launcher's (BB_MENU_LANGUAGE), else the system's, as the launcher picks its own.
     {
         const char* lang = std::getenv("BB_MENU_LANGUAGE");
@@ -136,9 +153,7 @@ void Load() {
                 }
             }
         }
-        v.menu_language = lang && (lang[0] == 'r' || lang[0] == 'R') && (lang[1] == 'u' || lang[1] == 'U')
-                              ? MenuLanguage::Russian
-                              : MenuLanguage::English;
+        v.system_russian = lang && (lang[0] == 'r' || lang[0] == 'R') && (lang[1] == 'u' || lang[1] == 'U');
     }
     if (FILE* file = std::fopen(Path(), "r")) {
         char line[256];
@@ -248,7 +263,9 @@ void Save() {
         return std::string(text);
     };
     const auto flag = [](bool value) { return std::string(value ? "1" : "0"); };
-    put("menu_language", v.menu_language == MenuLanguage::Russian ? "ru" : "en");
+    put("menu_language", v.menu_language == MenuLanguage::Game      ? "game"
+                         : v.menu_language == MenuLanguage::Russian ? "ru"
+                                                                    : "en");
     put("upscaler", UpscalerName(v.upscaler));
     put("preset", std::to_string(v.preset.load()));
     put("sharpen", flag(v.sharpen));
@@ -272,6 +289,9 @@ void Save() {
     // Read by patches.py at start.
     for (int e = 0; e < EffectCount; ++e) {
         put(Effects[e].key, flag(v.effects[e]));
+    }
+    for (int c = 0; c < CheatCount; ++c) {
+        put(Cheats[c].key, flag(v.cheats[c]));
     }
     put("model_lod", std::to_string(v.model_lod.load()));
     put("memory_model", MemoryModelKeys[std::clamp(v.memory_model.load(), 0, MemoryModelCount - 1)]);

@@ -23,7 +23,11 @@ inline bool IsFrameUpscaler(int upscaler) {
 }
 enum Preset : int { NativeAA = 0, Quality, Balanced, Performance, UltraPerformance, PresetCount };
 enum DebugView : int { DebugNone = 0, DebugReactive = 1, DebugMotion = 2, DebugViewCount };
-enum class MenuLanguage { English, Russian };
+/// The port's menu language: English, Russian, or the game's own (Game: as the game's menu texts
+/// are, the system's until the game has shown one).
+enum class MenuLanguage { English, Russian, Game };
+/// The game's language as its menu texts show it (BbGameMenu: Cyrillic or not).
+enum class GameLanguage : int { Unknown, English, Russian };
 
 /// Game effects switched by the community patches at start (patches.py EFFECTS): ini key,
 /// menu label, default (the game's own behaviour).
@@ -46,6 +50,30 @@ inline constexpr Effect Effects[] = {
     {"debug_menu", "Debug menu (requires font files)", "Debug menu (нужны файлы шрифтов)", false},
 };
 inline constexpr int EffectCount = int(sizeof(Effects) / sizeof(Effects[0]));
+/// Cheats (bbport_cheats.cpp), switched at once: ini key, menu
+/// label (short: the game's name column is narrow), its help line. All off by default.
+struct Cheat {
+    const char* key;
+    const char* label;
+    const char* label_ru;
+    const char* help;
+    const char* help_ru;
+};
+inline constexpr Cheat Cheats[] = {
+    {"cheat_health", "Infinite health", "Бесконечное здоровье", "Health never runs out",
+     "Здоровье не кончается"},
+    {"cheat_stamina", "Infinite stamina", "Бесконечная выносливость", "Stamina never runs out",
+     "Выносливость не кончается"},
+    {"cheat_blood_echoes", "Infinite Blood Echoes", "Бесконечные отголоски",
+     "Blood Echoes are set to 99,999,999", "Отголосков крови становится 99 999 999"},
+    {"cheat_insight", "Infinite Insight", "Бесконечное озарение", "Insight is set to 99,999,999",
+     "Озарения становится 99 999 999"},
+    {"cheat_items", "Infinite items", "Бесконечные предметы", "A used item's count is set to 20",
+     "Предметов после использования остаётся 20"},
+    {"cheat_one_hit_kill", "One-hit kills", "Убийство с одного удара", "Enemies die from one hit",
+     "Враги умирают с одного удара"},
+};
+inline constexpr int CheatCount = int(sizeof(Cheats) / sizeof(Cheats[0]));
 /// Live output resolutions: the upscaler's output and the UI host targets.
 inline constexpr int OutputWidths[] = {1280, 1920, 2560, 3840};
 inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
@@ -56,7 +84,10 @@ inline constexpr const char* MemoryModelKeys[MemoryModelCount] = {"classic", "hy
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
 
 struct Values {
-    std::atomic<MenuLanguage> menu_language{MenuLanguage::Russian};
+    std::atomic<MenuLanguage> menu_language{MenuLanguage::Game};
+    /// The language MenuLanguage::Game uses until the game's is known (the launcher's or system's).
+    std::atomic<bool> system_russian{false};
+    std::atomic<GameLanguage> game_language{GameLanguage::Unknown};
     std::atomic<int> upscaler{UpscalerFsr3};
     std::atomic<int> preset{NativeAA};
     std::atomic<bool> sharpen{true};
@@ -86,6 +117,8 @@ struct Values {
     std::atomic<int> active_render_width{1920}, active_render_height{1080};
     /// Applied at start (patches.py); the menu shows when a restart is needed.
     std::atomic<bool> effects[EffectCount]{};
+    /// Applied at once (BbCheats::Poll).
+    std::atomic<bool> cheats[CheatCount]{};
     std::atomic<int> model_lod{0}; ///< -2 highest .. 2 lowest, 0 the game's
     std::atomic<int> memory_model{MemoryClassic}; ///< MemoryModel, on restart
     std::atomic<int> output_res{OutputDefault}; ///< index into OutputWidths
@@ -117,6 +150,8 @@ struct Values {
 };
 
 Values& Get();
+/// The port's texts in Russian (menu_language, or the game's language for MenuLanguage::Game).
+bool Russian();
 /// Localized overlay text; the Language selector itself stays in English.
 const char* MenuText(const char* english, const char* russian);
 

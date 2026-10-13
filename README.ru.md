@@ -6,18 +6,23 @@
 
 - **Мышь и клавиатура:** мышь поворачивает камеру напрямую, как в PC-играх; любую клавишу можно
   переназначить.
-- **Копии сохранений:** сохраняйте прогресс в любой момент (меню паузы → **Сохранения** или
-  **F5**) и загружайте любую копию (**F8**) без перезапуска игры.
+- **Копии сохранений:** сохраняйте прогресс в любой момент и загружайте любую копию без
+  перезапуска игры. Где: в меню паузы самой игры (Options → **Сохранения**), в меню порта
+  (**Insert**, на геймпаде **L3 + R3** → вкладка **Сохранения**) или клавишами **F5** (сохранить) /
+  **F8** (загрузить последнюю).
+- **Читы**, включаются и выключаются сразу: в меню System самой игры (**Читы**) и в меню порта
+  (вкладка **Читы**). См. [Читы](#читы).
 - **DLSS, FSR 4, FSR 3.1**, вывод до 4K, FPS без ограничения.
 
-**[Скачать v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip)** (Windows 10/11, 116 МБ)
+**[Скачать v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip)** (Windows 10/11, 116 МБ)
 
 <p>
-<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: новое видео"></a>
-<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: первое видео"></a>
+<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="32%" alt="Bloodborne Windows Native на YouTube: новое видео"></a>
+<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="32%" alt="Bloodborne Windows Native на YouTube: первое видео"></a>
+<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="32%" alt="Bloodborne Windows Native на YouTube: прохождение на этом порте"></a>
 </p>
 
-**▶ Смотреть на YouTube: [новое видео](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [первое видео](https://www.youtube.com/watch?v=JUkWqngg8r4)**
+**▶ Смотреть на YouTube: [новое видео](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [первое видео](https://www.youtube.com/watch?v=JUkWqngg8r4) · [прохождение на этом порте](https://www.youtube.com/watch?v=lZabKv_oRko)**
 
 Нативный порт *Bloodborne* (PlayStation 4, версия 1.09) для Windows на основе
 **[bbport](https://github.com/deadinside28/bloodborne_pc)** от deadinside28.
@@ -40,7 +45,7 @@
 
 ![](media/menu-additional.jpg)
 
-![Меню порта (Insert)](media/menu-port.jpg)
+![Меню порта (Insert или L3 + R3 на геймпаде)](media/menu-port.jpg)
 
 ![Окно игры на Windows 11](media/windows-desktop.jpg)
 
@@ -53,6 +58,8 @@
 - **Мышь и клавиатура:** мышь поворачивает камеру напрямую, как в PC-играх.
 - **Режимы памяти:** Классический (самый проверенный) и Гибрид (быстрее на видеокартах).
 - **Копии сохранений** из меню паузы и клавишами F5 / F8 (см. [Сохранения](#сохранения)).
+- **Читы** в меню System и в меню порта (см. [Читы](#читы)).
+- Меню порта на языке игры (русский или английский).
 - Защищённые сейвы, моды без изменения файлов игры, включение и выключение эффектов игры.
 
 ## Требования
@@ -63,7 +70,7 @@
 
 ## Как запустить
 
-1. [Скачайте v1.03](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.03/bloodborne-win-native-v1.03.zip) и распакуйте.
+1. [Скачайте v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip) и распакуйте.
 2. Укажите папку игры в `bbport.ini`:
    ```ini
    game_dir=D:\Games\CUSA03173
@@ -73,8 +80,9 @@
    Или оставьте `game_dir` пустым и положите папку `CUSA03173` рядом с `Bloodborne.cmd`.
 3. Запустите `Bloodborne.cmd`.
 
-Для DLSS нужен `nvngx_dlss.dll` от NVIDIA рядом с `out\bb-probe.exe`: `bash tools/fetch_dlss.sh`
-скачивает его из DLSS SDK NVIDIA (в этом репозитории его нет).
+В релизном пакете `nvngx_dlss.dll` от NVIDIA для DLSS уже есть. Для сборки из исходников он нужен
+рядом с `out\bb-probe.exe`: `bash tools/fetch_dlss.sh` скачивает его из DLSS SDK NVIDIA (в этом
+репозитории его нет).
 
 ## Управление
 
@@ -90,11 +98,78 @@
 | Enter / Tab | Options / тачпад |
 | F5 / F8 | сохранить копию / загрузить последнюю копию (нажать дважды) |
 | F11 | полный экран |
-| Insert | меню порта |
+| **Insert** (на геймпаде **L3 + R3** вместе) | **меню порта** |
 | клик в окне / удерживать левый Alt | окно захватывает курсор / отпускает его |
 
-Геймпады работают через SDL. Любую клавишу можно переназначить в `bbport.ini`:
-`key.r1=3,mouse_left`, `pad.cross=a`.
+Геймпады работают через SDL.
+
+### Переназначение клавиш
+
+1. Закройте игру.
+2. Откройте `bbport.ini` в папке порта (рядом с `Bloodborne.cmd`) Блокнотом.
+3. Допишите в конец строки `key.КНОПКА_PS4=КЛАВИША`. Если клавиш несколько, перечислите их через
+   запятую (до 4).
+4. Сохраните файл и запустите игру.
+
+```ini
+key.r1=mouse_left
+key.r2=mouse_right
+key.circle=Left Shift,mouse_x1
+key.l1=mouse_x2
+key.square=E
+```
+
+Регистр не важен. Строка полностью заменяет стандартные клавиши и кнопки мыши этой кнопки:
+после `key.l1=mouse_x2` клавиша 1 больше не L1. Чтобы оставить старую клавишу, впишите и её:
+`key.l1=1,mouse_x2`. Геймпад строки `key.` не меняют.
+
+**Кнопки PS4** (после `key.`):
+- `cross`: Крест, действие (стандартно Space)
+- `circle`: Круг, уклонение, при удержании бег (Left Shift)
+- `square`: Квадрат, быстрый предмет (E)
+- `triangle`: Треугольник, флакон крови (Q)
+- `l1`: L1, трансформация оружия (1)
+- `r1`: R1, обычная атака (3 и левая кнопка мыши)
+- `l2`: L2, огнестрельное оружие (R)
+- `r2`: R2, сильная атака (F и правая кнопка мыши)
+- `l3`: L3, прыжок на бегу (Z)
+- `r3`: R3, захват цели (C и средняя кнопка мыши)
+- `options`: меню (Return)
+- `touchpad`: тачпад, жесты (Tab)
+- `up`, `down`, `left`, `right`: крестовина (I, K, J, L)
+- `move_up`, `move_down`, `move_left`, `move_right`: ходьба (W, S, A, D)
+- `look_up`, `look_down`, `look_left`, `look_right`: камера (стрелки)
+
+**Мышь:** `mouse_left`, `mouse_right`, `mouse_middle` (нажатие колеса), `mouse_x1` (боковая
+«назад»), `mouse_x2` (боковая «вперёд»). Прокрутку колеса назначить нельзя.
+
+**Клавиатура** (пишите точно так):
+- буквы `A` … `Z` (английская раскладка), цифры верхнего ряда `0` … `9`, `F1` … `F12`
+- `Space` (пробел), `Return` (Enter), `Escape`, `Tab`, `Backspace`, `CapsLock`
+- `Left Shift`, `Right Shift`, `Left Ctrl`, `Right Ctrl`, `Right Alt`
+- стрелки `Up`, `Down`, `Left`, `Right`
+- `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`
+- цифровой блок: `Keypad 0` … `Keypad 9`, `Keypad Enter`, `Keypad +`, `Keypad -`, `Keypad *`,
+  `Keypad /`, `Keypad .`
+- символы `` ` `` `-` `=` `[` `]` `;` `'` `.` `/` `\`
+
+Запятую назначить нельзя: она разделяет клавиши в строке. Клавиши порта (F5, F8, F11, Insert,
+левый Alt) лучше не занимать: они продолжат делать своё.
+
+**Геймпад:** так же, но `pad.` вместо `key.`. Справа пишется место кнопки на геймпаде по
+раскладке Xbox:
+- `a`: нижняя (Крест на PS), `b`: правая (Круг), `x`: левая (Квадрат), `y`: верхняя (Треугольник)
+- `leftshoulder`, `rightshoulder`: L1, R1
+- `lefttrigger`, `righttrigger`: L2, R2
+- `leftstick`, `rightstick`: L3, R3 (нажатие стиков)
+- `start`, `back`, `touchpad`
+- `dpup`, `dpdown`, `dpleft`, `dpright`: крестовина
+
+Пример: `pad.circle=a` и `pad.cross=b` меняют местами нижнюю и правую кнопки: уклонение будет на
+нижней, действие — на правой.
+
+Если клавиша не работает, найдите в `out\last-run.log` строку `controls: unknown`: в ней будет
+неверное название.
 
 ## Сохранения
 
@@ -102,7 +177,7 @@
 
 - **Меню паузы → Сохранения** (после «Система»): **Сохранить** делает копию прогресса в
   нынешнем виде; **Загрузить** показывает автосохранение игры и ваши копии с датой и местом.
-- **F5** сохраняет копию, **F8** загружает последнюю. В меню порта (**Insert**) тоже есть вкладка
+- **F5** сохраняет копию, **F8** загружает последнюю. В меню порта (**Insert** или **L3 + R3**) тоже есть вкладка
   **Сохранения**.
 - Загрузка не требует перезапуска: игра сама выходит в главное меню и продолжает с копии, за
   несколько секунд.
@@ -115,10 +190,30 @@
 
 ![«Сохранения» в меню паузы](media/saves-pause-menu.jpg)
 
-<p>
-<img src="media/saves-menu.jpg" width="49%" alt="Сохранения: Сохранить и Загрузить">
-<img src="media/saves-load.jpg" width="49%" alt="Список загрузки">
-</p>
+![Сохранения: Сохранить и Загрузить](media/saves-menu.jpg)
+
+![Список загрузки](media/saves-load.jpg)
+
+![Вкладка «Сохранения» в меню порта (Insert)](media/saves-overlay.jpg)
+
+## Читы
+
+В меню паузы игры: Options → System → **Читы**; в меню порта (**Insert**, на геймпаде
+**L3 + R3**): вкладка **Читы**. Включаются сразу, без перезапуска, и остаются включёнными, пока их
+не выключить (`bbport.ini`).
+
+| Чит | Что делает |
+|---|---|
+| Бесконечное здоровье | Здоровье не кончается |
+| Бесконечная выносливость | Выносливость не кончается |
+| Бесконечные отголоски | Отголосков крови становится 99 999 999 |
+| Бесконечное озарение | Озарения становится 99 999 999 |
+| Бесконечные предметы | Предметов после использования остаётся 20 |
+| Убийство с одного удара | Враги умирают с одного удара |
+
+> То, что выставил чит, остаётся в сохранении и после его выключения: отголоски, озарение (много
+> озарения меняет мир: враги, звуки, безумие), число предметов. Перед включением читов сделайте
+> копию (**F5**): её загрузка вернёт всё как было.
 
 ## Сборка из исходников
 
@@ -148,3 +243,6 @@
 GPL-2.0-or-later (см. `LICENSE`). Встроенные компоненты сохраняют свои лицензии (видеоядро
 shadPS4: GPL-2.0-or-later; мост DLSS в `gpu/dlss_bridge`: MIT). Бинарники NVIDIA DLSS и AMD
 FidelityFX в репозиторий не входят.
+
+NVIDIA DLSS — технология NVIDIA Corporation. Релизный пакет содержит `nvngx_dlss.dll` от NVIDIA
+без изменений, по лицензии NVIDIA DLSS SDK (`out\LICENSE-DLSS-SDK.txt` в пакете).

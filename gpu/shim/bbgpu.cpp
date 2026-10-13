@@ -1,4 +1,5 @@
 #include "bbport_write_log.h"
+#include "bbport_cheats.h"
 #include "bbport_game_menu.h"
 #include "bbport_mouse_camera.h"
 #include "bbport_gnm_hooks.h"
@@ -355,6 +356,7 @@ extern "C" int bbgpu_handle_fault(void* ucontext, void* address) {
 extern "C" void bbgpu_patch_image(unsigned char* image, uint64_t size) {
     BbGnmHooks::PatchImage(image, size);
     BbGameMenu::PatchImage(image, size);
+    BbCheats::PatchImage(image, size);
     BbMouseCamera::PatchImage(image, size);
 }
 

@@ -12,6 +12,7 @@
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/renderdoc.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
+#include "bbport_cheats.h"
 #include "bbport_game_menu.h"
 #include "bbport_save_menu.h"
 #include "bbport_overlay.h"
@@ -662,6 +663,7 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
         // bbport: the settings menu / FPS counter over the frame, at display resolution.
         BbGameMenu::Poll(); // the port's pages in the game's System menu
         BbSaveMenu::Poll(); // save copies: drops loads the game did not take
+        BbCheats::Poll();   // cheats switched in the menus
         const bool overlay = BbOverlay::Visible();
         const std::array post_barriers{
             vk::ImageMemoryBarrier{

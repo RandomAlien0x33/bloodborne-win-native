@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include "bbport_cheats.h"
 #include "bbport_game_menu.h"
 #include "bbport_save_menu.h"
 #include "bbport_settings.h"
@@ -477,14 +478,32 @@ void DisplayTab() {
     Toggle("fps", T("FPS counter", "Счётчик FPS"), s.show_fps,
            T("Frames per second and frame time in the top right corner.",
              "Кадры в секунду и время кадра в правом верхнем углу."));
-    static const char* languages[] = {"English", "Русский"};
-    Choice("language", "Language", s.menu_language == BbSettings::MenuLanguage::Russian ? 1 : 0, 2,
-           [](int i) { return languages[i]; }, [](int) { return true; },
-           T("Language of this menu.", "Язык этого меню."), true, [&](int i) {
-               s.menu_language = i == 1 ? BbSettings::MenuLanguage::Russian
-                                        : BbSettings::MenuLanguage::English;
+    // In the order of BbSettings::MenuLanguage.
+    const char* languages[] = {"English", "Русский", T("As in the game", "Как в игре")};
+    Choice("language", "Language", int(s.menu_language.load()), 3, [&](int i) { return languages[i]; },
+           [](int) { return true; },
+           T("Language of this menu and the port's messages. As in the game: the game's own language.",
+             "Язык этого меню и сообщений порта. Как в игре: язык самой игры."),
+           true, [&](int i) {
+               s.menu_language = BbSettings::MenuLanguage(i);
                BbSettings::Save();
            });
+    // Leaving the game from the pad: a second press within 4 s
+    // quits as the window's close button does.
+    static auto quit_armed = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    const bool armed = now - quit_armed < std::chrono::seconds(4);
+    if (Row("quit", T("Quit game", "Выйти из игры"), armed ? T("Press again", "Нажмите ещё раз") : nullptr,
+            T("Closes the game (the game's own progress is as it last saved).",
+              "Закрывает игру (прогресс — как при последнем сохранении игры)."),
+            true, -1.0f, nullptr, true) != 0) {
+        if (armed) {
+            SDL_Event quit{};
+            quit.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit);
+        }
+        quit_armed = armed ? std::chrono::steady_clock::time_point{} : now;
+    }
 }
 
 void UpscalerTab() {
@@ -641,6 +660,26 @@ void EffectsTab() {
     }
 }
 
+/// Cheats (bbport_cheats.cpp), as in the game's System menu; they apply at once.
+void CheatsTab() {
+    auto& s = BbSettings::Get();
+    for (int c = 0; c < BbSettings::CheatCount; ++c) {
+        const auto& cheat = BbSettings::Cheats[c];
+        const bool available = BbCheats::Available(c);
+        Toggle(cheat.key, T(cheat.label, cheat.label_ru), s.cheats[c],
+               available ? T(cheat.help, cheat.help_ru)
+                         : T("Unavailable: the game's code differs from the cheat's (see the log).",
+                             "Недоступен: код игры не совпадает с кодом чита (см. лог)."),
+               available);
+    }
+    ImGui::Spacing();
+    Note(T("Cheats apply at once. Turning one off leaves what it set (health, Blood Echoes, Insight, "
+           "item counts) as it is.",
+           "Читы включаются сразу. Если выключить чит, то, что он выставил (здоровье, отголоски, "
+           "озарение, число предметов), остаётся как есть."),
+         Dim());
+}
+
 void AdvancedTab() {
     auto& s = BbSettings::Get();
     const bool upscaler_on = s.upscaler != BbSettings::UpscalerOff;
@@ -787,9 +826,9 @@ void Menu() {
     const ImVec2 display = io.DisplaySize;
     ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, 165));
 
-    static const char* tab_en[] = {"Display", "Upscaler", "Game effects", "Advanced", "Saves"};
-    static const char* tab_ru[] = {"Изображение", "Апскейлер", "Эффекты игры", "Дополнительно", "Сохранения"};
-    constexpr int tabs = 5;
+    static const char* tab_en[] = {"Display", "Upscaler", "Game effects", "Advanced", "Cheats", "Saves"};
+    static const char* tab_ru[] = {"Изображение", "Апскейлер", "Эффекты игры", "Дополнительно", "Читы", "Сохранения"};
+    constexpr int tabs = 6;
     if (focus_request) {
         focus_request = false;
         state.focus_first = true;
@@ -924,6 +963,7 @@ void Menu() {
     case 1: UpscalerTab(); break;
     case 2: EffectsTab(); break;
     case 3: AdvancedTab(); break;
+    case 4: CheatsTab(); break;
     default: SavesTab(); break;
     }
     if (RestartNeeded()) {

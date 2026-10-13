@@ -156,10 +156,17 @@ u32 AddText(const char* english, const char* russian) {
     texts.push_back({Utf16(english), Utf16(russian)});
     return IdBase + u32(texts.size() - 1);
 }
-/// The game's own language decides (its "Screen/Sound" text in Cyrillic: Russian, else English);
-/// the port's menu language until the game has looked that text up.
-enum class GameLanguage { Unknown, English, Russian };
-std::atomic<GameLanguage> game_language{GameLanguage::Unknown};
+/// The game's own language decides (its "System" or "Screen/Sound" text in Cyrillic: Russian, else
+/// English; BbSettings::Values::game_language); the port's menu language until the game has looked
+/// one of them up.
+using BbSettings::GameLanguage;
+void NoteLanguage(const char16_t* text) {
+    bool cyrillic = false;
+    for (const char16_t* c = text; *c; ++c) {
+        cyrillic = cyrillic || (*c >= 0x400 && *c < 0x500);
+    }
+    BbSettings::Get().game_language = cyrillic ? GameLanguage::Russian : GameLanguage::English;
+}
 
 // The memory mode row's help line, and its variant for integrated GPUs, where the list also
 // offers "Integrated GPU" (MemoryModelAvailable). 0 until defined.
@@ -170,17 +177,16 @@ const char16_t* TextOf(u32 id) {
         id = memory_help_integrated;
     }
     const Text& t = texts[id - IdBase];
-    const GameLanguage game = game_language.load();
-    const bool russian = game == GameLanguage::Unknown
-                             ? BbSettings::Get().menu_language == BbSettings::MenuLanguage::Russian
-                             : game == GameLanguage::Russian;
+    const GameLanguage game = BbSettings::Get().game_language.load();
+    const bool russian = game == GameLanguage::Unknown ? BbSettings::Russian() : game == GameLanguage::Russian;
     return russian ? t.russian.c_str() : t.english.c_str();
 }
 
 // ---- The port's values the game's rows edit (ints: the list rows bind ints). ----
 enum Field : int {
     OutputRes, Upscaler, Preset, Sharpness, ShowFps,
-    ModelLod, Memory, MouseCamera, MouseSensitivity, MouseInvertY, FirstEffect, FieldCount = FirstEffect + BbSettings::EffectCount
+    ModelLod, Memory, MouseCamera, MouseSensitivity, MouseInvertY, FirstEffect,
+    FirstCheat = FirstEffect + BbSettings::EffectCount, FieldCount = FirstCheat + BbSettings::CheatCount
 };
 int values[FieldCount];  // what the game's rows show and change (list rows bind ints)
 u8 bytes[FieldCount];    // the same for toggle and slider rows (they bind bytes)
@@ -220,6 +226,9 @@ void Fill(const BbSettings::Values& s, int* values) {
     }
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         values[FirstEffect + e] = s.effects[e];
+    }
+    for (int c = 0; c < BbSettings::CheatCount; ++c) {
+        values[FirstCheat + c] = s.cheats[c];
     }
 }
 
@@ -262,8 +271,8 @@ void DefineTexts() {
             {f, AddText(en, ru), AddText(help_en, help_ru), std::move(choices), kind});
     };
 
-    page("Display", "Изображение", "Resolution, upscaler and sharpness (bbport)",
-         "Разрешение, апскейлер и резкость (bbport)");
+    page("Display", "Изображение", "Resolution, upscaler and sharpness",
+         "Разрешение, апскейлер и резкость");
     // Output and preset are a startup patch unless live resolution changes are on (run.sh /
     // run_game.py set BB_RENDER_RES then): their help says so.
     const bool fixed = BbSettings::FixedRenderSession();
@@ -287,7 +296,7 @@ void DefineTexts() {
     row(ShowFps, "FPS counter", "Счётчик FPS", "Frame rate in the top right corner",
         "Частота кадров в правом верхнем углу", toggle);
 
-    page("Additional", "Дополнительно", "More port settings (bbport)", "Другие настройки порта (bbport)");
+    page("Additional", "Дополнительно", "More port settings", "Другие настройки порта");
     row(Memory, "Memory mode", "Режим памяти",
         "Hybrid is faster; if the game crashes, choose Classic. After a restart",
         "Гибрид быстрее; если игра вылетает, выберите Классический. После перезапуска",
@@ -306,8 +315,8 @@ void DefineTexts() {
     row(MouseInvertY, "Invert mouse Y", "Инверсия мыши по Y", "Mouse up looks down",
         "Мышь вверх: взгляд вниз", toggle);
 
-    page("Game effects", "Эффекты игры", "Model detail and effects (bbport; after a restart)",
-         "Детализация и эффекты (bbport; после перезапуска)");
+    page("Game effects", "Эффекты игры", "Model detail and effects (after a restart)",
+         "Детализация и эффекты (после перезапуска)");
     row(ModelLod, "Model detail", "Детализация", "Level of detail of models (after a restart)",
         "Детализация моделей (после перезапуска)",
         {AddText("Highest", "Максимальная"), AddText("Game default", "Как в игре"),
@@ -341,8 +350,8 @@ void DefineTexts() {
     };
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         if (pages.back().rows.size() == RowsPerPage) {
-            page("Game patches", "Патчи игры", "More game patches (bbport; after a restart)",
-                 "Другие патчи игры (bbport; после перезапуска)");
+            page("Game patches", "Патчи игры", "More game patches (after a restart)",
+                 "Другие патчи игры (после перезапуска)");
         }
         const auto& effect = BbSettings::Effects[e];
         const Short* name = nullptr;
@@ -355,6 +364,12 @@ void DefineTexts() {
             std::string(name ? name->help_ru : effect.label_ru) + " (после перезапуска)";
         row(Field(FirstEffect + e), name ? name->en : effect.label, name ? name->ru : effect.label_ru,
             help_en.c_str(), help_ru.c_str(), toggle);
+    }
+
+    page("Cheats", "Читы", "Cheats, switched at once", "Читы, включаются сразу");
+    for (int c = 0; c < BbSettings::CheatCount; ++c) {
+        const auto& cheat = BbSettings::Cheats[c];
+        row(Field(FirstCheat + c), cheat.label, cheat.label_ru, cheat.help, cheat.help_ru, toggle);
     }
 }
 
@@ -593,16 +608,14 @@ GUEST_ABI const char16_t* LookupHook(void* repository, u32 table, u32 category, 
             return title; // our list's title in place of System's (looked up as the list opens)
         }
     }
+    // "System" is looked up as the pause menu opens, before "Saves" shows.
     if (category == TextName && id == SystemItem && text) {
         system_text = text;
+        NoteLanguage(text);
     }
     if (category == TextName && id == ScreenSoundItem && text) {
         screen_sound_text = text;
-        bool cyrillic = false;
-        for (const char16_t* c = text; *c; ++c) {
-            cyrillic = cyrillic || (*c >= 0x400 && *c < 0x500);
-        }
-        game_language = cyrillic ? GameLanguage::Russian : GameLanguage::English;
+        NoteLanguage(text);
     }
     return text;
 }
@@ -643,8 +656,8 @@ std::vector<std::string> load_list; // the copies the Load list shows, in its or
 
 void DefineSaveTexts() {
     saves_name = AddText("Saves", "Сохранения");
-    saves_help = AddText("Save a copy of your progress or load one (bbport)",
-                         "Сохранить копию прогресса или загрузить её (bbport)");
+    saves_help = AddText("Save a copy of your progress or load one",
+                         "Сохранить копию прогресса или загрузить её");
     save_name = AddText("Save", "Сохранить");
     save_help = AddText("Make a copy of the save as it is now", "Сделать копию сохранения в нынешнем виде");
     load_name = AddText("Load", "Загрузить");
@@ -1205,6 +1218,9 @@ void Poll() {
     s.mouse_sensitivity = MouseSensitivities[std::clamp(values[MouseSensitivity], 0, 10)];
     for (int e = 0; e < BbSettings::EffectCount; ++e) {
         s.effects[e] = values[FirstEffect + e] != 0;
+    }
+    for (int c = 0; c < BbSettings::CheatCount; ++c) {
+        s.cheats[c] = values[FirstCheat + c] != 0;
     }
     std::memcpy(applied, values, sizeof(values));
     BbSettings::Save();
