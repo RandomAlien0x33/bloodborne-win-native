@@ -549,7 +549,14 @@ public:
     /// Determines if a format is supported for a set of feature flags.
     [[nodiscard]] bool IsFormatSupported(vk::Format format, vk::FormatFeatureFlags2 flags) const;
 
+    /// bbport (BB_VRAM_LIMIT_MB): references the memory held to leave that much VRAM, so that
+    /// the driver keeps it resident instead of moving it out to make room. Once per presented frame.
+    void TouchVramLimit(vk::CommandBuffer cmdbuf) const;
+
 private:
+    /// bbport (BB_VRAM_LIMIT_MB=N): holds all of the largest device-local heap but N MiB, and
+    /// leaves the held memory out of usage and budgets: a card with N MiB (tests on a larger one).
+    void HoldVramLimit();
     Instance(const Frontend::WindowSystemInfo&, s32, bool, bool);
     /// Creates the logical device opportunistically enabling extensions
     bool CreateDevice();
@@ -639,10 +646,17 @@ private:
     bool supports_block_texel_view{};
     u64 total_memory_budget{};
     std::vector<size_t> valid_heaps;
+    u64 vram_limit_held{}; ///< bbport: bytes held by HoldVramLimit
+    std::vector<vk::DeviceMemory> vram_limit_memory;
+    std::vector<vk::Buffer> vram_limit_buffers;
 };
 
 /// bbport memory statistics: device-local VMA memory blocks and the allocations in them (the
 /// difference is free space VMA keeps).
 void VmaDeviceUsage(u64& block_bytes, u64& allocation_bytes);
+
+/// bbport: a new allocation of `size` bytes would leave less VRAM than is kept for copies of the
+/// game's memory (BB_VRAM_RESERVE_MB, 384): images then go to system memory.
+bool VramReserveReached(u64 size);
 
 } // namespace Vulkan

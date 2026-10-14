@@ -122,17 +122,36 @@ def configured_path(config, key):
     return str(Path(config).parent / value) if value else ''
 
 
+# Memory models: bbport.ini memory_model (the in-game menu "Memory mode") -> the environment the
+# model runs with. gpu/shim/bbport_settings.h MemoryModels lists the same keys for the menus; a new
+# model is an entry here and a row there. Variables set by hand (BB_PC_MODEL, BB_GUEST_IN_PLACE)
+# take precedence over the file.
+MEMORY_MODELS = {
+    # Copies of the game's memory in VRAM (sparse arena), the most tested.
+    'classic': {},
+    # The game's memory in place, with write tracking and GPU writes in VRAM.
+    'hybrid': {'BB_PC_MODEL': '1', 'BB_PC_MODEL_ANY_GPU': '1', 'BB_WRITE_TRACKING': '1',
+               'BB_GPU_WRITES_VRAM': '1'},
+    # The memory module without sparse binding: VRAM copies of loaded data only, the rest read in
+    # place; VRAM does not grow past the budget (4 GB cards), the copies before images there.
+    'experimental1': {'BB_PC_MODEL': '1', 'BB_PC_MODEL_ANY_GPU': '1', 'BB_LAYER_MEMORY': '1',
+                      'BB_LAYER_FAVOR_COPIES': '1', 'BB_VRAM_PRESSURE_IDLE_SECONDS': '8'},
+    # The game's memory in place, no copies (integrated GPUs).
+    'direct': {'BB_PC_MODEL': '1', 'BB_PC_MODEL_ANY_GPU': '1'},
+}
+
+
 def configured_memory_model(config):
-    """bbport.ini's memory_model (classic, hybrid or direct; the last such line), else 'classic'."""
+    """bbport.ini's memory_model (a MEMORY_MODELS key; the last such line), else 'classic'."""
     value = 'classic'
     try:
         lines = Path(config).read_text(errors='replace').splitlines()
     except OSError:
         return value
     for line in lines:
-        match = re.fullmatch(r'memory_model=(classic|hybrid|direct)', line.strip())
-        if match:
-            value = match.group(1)
+        name, sep, rest = line.strip().partition('=')
+        if sep and name.strip() == 'memory_model' and rest.strip() in MEMORY_MODELS:
+            value = rest.strip()
     return value
 
 
@@ -415,15 +434,13 @@ def main():
         # are set: hybrid = in place with write tracking and GPU writes in VRAM, direct = in place.
         # What it set is redone after an in-game restart (the menu may have changed it).
         if os.environ.pop('BB_MEMORY_FROM_INI', None):
-            for key in ('BB_PC_MODEL', 'BB_PC_MODEL_ANY_GPU', 'BB_GUEST_IN_PLACE', 'BB_WRITE_TRACKING', 'BB_GPU_WRITES_VRAM'):
+            for key in {'BB_GUEST_IN_PLACE'}.union(*MEMORY_MODELS.values()):
                 os.environ.pop(key, None)
         if not env('BB_PC_MODEL') and not env('BB_GUEST_IN_PLACE'):
             memory = configured_memory_model(config)
-            if memory != 'classic':
-                # Chosen in the menu: also on GPUs the model is not marked tested for (NVIDIA).
-                os.environ.update(BB_PC_MODEL='1', BB_PC_MODEL_ANY_GPU='1', BB_MEMORY_FROM_INI='1')
-            if memory == 'hybrid':
-                os.environ.update(BB_WRITE_TRACKING='1', BB_GPU_WRITES_VRAM='1')
+            if MEMORY_MODELS[memory]:
+                # Chosen in the menu: also on GPUs a model is not marked tested for (NVIDIA).
+                os.environ.update(MEMORY_MODELS[memory], BB_MEMORY_FROM_INI='1')
             print(f'Memory mode: {memory} (bbport.ini memory_model)')
         os.environ['BB_GUEST_IN_PLACE'] = env('BB_GUEST_IN_PLACE', env('BB_PC_MODEL', '0'))
         # Write tracking with userfaultfd (Linux; off by default: crashes on the Steam Deck).

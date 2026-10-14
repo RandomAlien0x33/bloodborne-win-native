@@ -14,7 +14,23 @@
   (вкладка **Читы**). См. [Читы](#читы).
 - **DLSS, FSR 4, FSR 3.1**, вывод до 4K, FPS без ограничения.
 
-**[Скачать v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip)** (Windows 10/11, 116 МБ)
+<br>
+
+<h2 align="center">⬇️ <a href="https://github.com/RandomAlien0x33/bloodborne-win-native/releases/latest">Скачать последнюю версию</a></h2>
+
+<p align="center">
+<a href="https://github.com/RandomAlien0x33/bloodborne-win-native/releases/latest"><img src="https://img.shields.io/github/v/release/RandomAlien0x33/bloodborne-win-native?label=%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C&color=2ea44f&style=for-the-badge&logo=windows&logoColor=white" height="44" alt="Скачать последнюю версию"></a>
+<br>
+Windows 10/11 · 116 МБ · файлов игры нет
+</p>
+
+> [!CAUTION]
+> **Видеокарта с памятью 4 ГБ и меньше?** Если игра вылетает или FPS резко падает через какое-то
+> время игры, попробуйте другие режимы памяти: в меню игры **Система → Дополнительно → Режим
+> памяти** (или в меню порта, Insert) выберите **Гибрид**, а если не поможет —
+> **Экспериментальный 1**. После смены режима игру нужно перезапустить.
+
+<br>
 
 <p>
 <a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="32%" alt="Bloodborne Windows Native на YouTube: новое видео"></a>
@@ -56,7 +72,7 @@
 - **Настройки в собственном меню игры** System (Изображение, Эффекты игры, Дополнительно) и в
   меню порта (**Insert** или L3+R3).
 - **Мышь и клавиатура:** мышь поворачивает камеру напрямую, как в PC-играх.
-- **Режимы памяти:** Классический (самый проверенный) и Гибрид (быстрее на видеокартах).
+- **Режимы памяти:** Классический (самый проверенный), Гибрид (быстрее на видеокартах; лучший на картах с 4 ГБ) и Экспериментальный 1 (видеопамять не растёт сверх бюджета; медленнее).
 - **Копии сохранений** из меню паузы и клавишами F5 / F8 (см. [Сохранения](#сохранения)).
 - **Читы** в меню System и в меню порта (см. [Читы](#читы)).
 - Меню порта на языке игры (русский или английский).
@@ -70,7 +86,7 @@
 
 ## Как запустить
 
-1. [Скачайте v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip) и распакуйте.
+1. [Скачайте последнюю версию](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/latest) (файл `.zip` в разделе Assets) и распакуйте.
 2. Укажите папку игры в `bbport.ini`:
    ```ini
    game_dir=D:\Games\CUSA03173

@@ -621,8 +621,10 @@ void EffectsTab() {
            T("Level of detail of models (game patch). Applies after restarting the game.",
              "Детализация моделей (патч игры). Применяется после перезапуска игры."),
            true, [&](int i) { Store(s.model_lod, lod_values[i], true); });
-    const char* memory[] = {T("Classic", "Классический"), T("Hybrid", "Гибрид"),
-                            T("Integrated GPU", "Встроенная графика")};
+    const char* memory[BbSettings::MemoryModelCount];
+    for (int m = 0; m < BbSettings::MemoryModelCount; ++m) {
+        memory[m] = T(BbSettings::MemoryModels[m].label, BbSettings::MemoryModels[m].label_ru);
+    }
     int memory_index = std::clamp(s.memory_model.load(), 0, BbSettings::MemoryModelCount - 1);
     // Integrated GPU (direct) on an integrated GPU only, or when bbport.ini has it already.
     const int memory_count = s.integrated_gpu || s.memory_model == BbSettings::MemoryDirect
@@ -631,12 +633,16 @@ void EffectsTab() {
     Choice("memory", T("Memory mode", "Режим памяти"), memory_index, memory_count,
            [&](int i) { return memory[i]; }, [](int) { return true; },
            T("How the GPU works with the game's memory. Classic: copies, the most tested. Hybrid: "
-             "shared memory, faster; if the game crashes, choose Classic. Integrated GPU: no copies at all; "
+             "shared memory, faster; if the game crashes, choose Classic. Experimental 1: copies only of "
+             "what the game loaded, the rest read from system memory; memory does not grow (4 GB cards), "
+             "slower. Integrated GPU: no copies at all; "
              "can help integrated graphics "
              "(laptops without a graphics card, Steam Deck), much slower on discrete cards. "
              "Applies after restarting the game.",
              "Как видеокарта работает с памятью игры. Классический: копии, самый проверенный. Гибрид: "
-             "общая память, быстрее; если игра вылетает, выберите Классический. Встроенная графика: "
+             "общая память, быстрее; если игра вылетает, выберите Классический. Экспериментальный 1: "
+             "копии только загруженного игрой, остальное читается из обычной памяти; память не растёт "
+             "(карты на 4 ГБ), медленнее. Встроенная графика: "
              "совсем без копий; может помочь встроенной "
              "графике (ноутбуки без видеокарты, Steam Deck), на дискретных картах намного медленнее. "
              "Применяется после перезапуска игры."),

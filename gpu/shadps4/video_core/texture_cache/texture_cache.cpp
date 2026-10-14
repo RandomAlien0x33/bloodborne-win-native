@@ -128,12 +128,16 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
     };
     // bbport BB_GUEST_IN_PLACE: the GPU copies the image into the game's memory itself, in stream
     // order: before the fences that follow, no wait here and no CPU copy afterwards.
+    // Where the memory has a VRAM copy the GPU copies into that copy as well: buffers bound over
+    // it read the image's data in stream order (motion blur read a render target as a
+    // buffer, 0x104ff00000, from a VRAM copy refreshed only once the CPU copy below landed, frames
+    // later: the frame smeared while the camera turned). The game's memory still gets it below.
     if (GuestInPlace() && image.info.guest_address != 0) {
         const auto [arena, offset] =
             buffer_cache.ObtainBuffer(image.info.guest_address, download_size, true);
+        image_copy.bufferOffset = offset;
+        runtime.DownloadImage(&image, arena, std::span{&image_copy, 1});
         if (buffer_cache.IsInPlace(image.info.guest_address, download_size)) {
-            image_copy.bufferOffset = offset;
-            runtime.DownloadImage(&image, arena, std::span{&image_copy, 1});
             return;
         }
     }
@@ -965,6 +969,40 @@ void TextureCache::RefreshImage(Image& image) {
         }
     }
 
+    if (sync_log) {
+        // BB_IMAGE_SYNC_LOG: the images refreshed most per 5 s (any reason), with their flags.
+        struct Refreshes {
+            u64 count = 0, bytes = 0;
+            u32 width = 0, height = 0, format = 0, tiling = 0, flags = 0;
+        };
+        static std::mutex refresh_mutex;
+        static std::unordered_map<VAddr, Refreshes> refreshes;
+        static auto window_start = std::chrono::steady_clock::now();
+        std::scoped_lock lk{refresh_mutex};
+        auto& r = refreshes[image.info.guest_address];
+        r = {r.count + 1,
+             r.bytes + image.info.guest_size,
+             image.info.size.width,
+             image.info.size.height,
+             u32(image.info.pixel_format),
+             u32(image.info.tile_mode),
+             r.flags | u32(image.flags)};
+        if (const auto now = std::chrono::steady_clock::now();
+            now - window_start >= std::chrono::seconds(5)) {
+            std::vector<std::pair<VAddr, Refreshes>> top(refreshes.begin(), refreshes.end());
+            std::ranges::sort(top, std::greater{}, [](const auto& e) { return e.second.bytes; });
+            std::string text;
+            for (size_t i = 0; i < std::min<size_t>(top.size(), 5); ++i) {
+                const auto& [address, e] = top[i];
+                text += fmt::format(" {:#x} {}x{} fmt {} tile {}: {}x {:.0f} MB flags {:#x};",
+                                    address, e.width, e.height, e.format, e.tiling, e.count,
+                                    e.bytes / 1e6, e.flags);
+            }
+            std::printf("Image refreshes (5 s, %zu images):%s\n", refreshes.size(), text.c_str());
+            refreshes.clear();
+            window_start = now;
+        }
+    }
     BbStats::image_upload_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
     boost::container::small_vector<vk::BufferImageCopy, 14> image_copies;
     for (u32 m = 0; m < num_mips; m++) {
@@ -1230,6 +1268,7 @@ void TextureCache::GarbageCollectImages() {
     }
     BbStats::gc_used_bytes.store(total_used_memory, std::memory_order_relaxed);
     BbStats::gc_trigger_bytes.store(trigger_gc_memory, std::memory_order_relaxed);
+    BbStats::gc_critical_bytes.store(critical_gc_memory, std::memory_order_relaxed);
     // bbport: gc_tick (one per guest submission, hundreds a second) at each of the last 64
     // seconds, for ages in seconds. The usage compared is all of our VRAM, not only images: on a
     // discrete GPU it stays over the trigger, where an age of 16 ticks (~3 frames) evicted every
@@ -1240,6 +1279,15 @@ void TextureCache::GarbageCollectImages() {
                                .count());
     if (second != gc_second) {
         gc_second = second;
+        // bbport: the driver's budget for our process, once a second: near it the collector evicts
+        // by submissions (as before 0.5) rather than keeping textures for seconds (NoteVramShort).
+        if (instance.CanReportMemoryUsage() && !instance.IsIntegrated()) {
+            const u64 budget = instance.GetDeviceMemoryBudgetNow();
+            if (budget != 0 && total_used_memory >= budget / 100 * 92 &&
+                vram_short_until.load(std::memory_order_relaxed) < second + 2) {
+                vram_short_until.store(second + 2, std::memory_order_relaxed);
+            }
+        }
         BbStats::coarse_second.store(u32(second), std::memory_order_relaxed);
         gc_tick_at_second[second % gc_tick_at_second.size()] = gc_tick;
     }
@@ -1283,7 +1331,7 @@ void TextureCache::GarbageCollectImages() {
         below_tick = gc_tick - ticks_to_destroy;
         if (!pressured && !aggresive) {
             below_tick = std::min(below_tick, idle_tick);
-        } else if (!emergency) {
+        } else if (!emergency && second >= vram_short_until.load(std::memory_order_relaxed)) {
             const u64 seconds = aggresive ? 1 : pressure_idle_seconds;
             below_tick = std::min(below_tick, tick_seconds_ago(seconds));
         }
@@ -1406,6 +1454,13 @@ void TextureCache::GarbageCollectSamplers() {
         configure(true);
         sampler_lru_cache.ForEachItemBelow(gc_tick - ticks_to_destroy, clean_up);
     }
+}
+
+void TextureCache::NoteVramShort() {
+    const u64 now = u64(std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now().time_since_epoch())
+                            .count());
+    vram_short_until.store(now + 30, std::memory_order_relaxed);
 }
 
 void TextureCache::RunGarbageCollector() {

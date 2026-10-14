@@ -88,7 +88,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.model_lod = std::clamp(i, -2, 2);
     } else if (key == "memory_model") {
         for (int m = 0; m < MemoryModelCount; ++m) {
-            if (value == MemoryModelKeys[m]) v.memory_model = m;
+            if (value == MemoryModels[m].key) v.memory_model = m;
         }
     } else if (key == "fullscreen") {
         v.fullscreen = i != 0;
@@ -294,7 +294,7 @@ void Save() {
         put(Cheats[c].key, flag(v.cheats[c]));
     }
     put("model_lod", std::to_string(v.model_lod.load()));
-    put("memory_model", MemoryModelKeys[std::clamp(v.memory_model.load(), 0, MemoryModelCount - 1)]);
+    put("memory_model", MemoryModels[std::clamp(v.memory_model.load(), 0, MemoryModelCount - 1)].key);
     put("output_res", std::to_string(OutputWidths[v.output_res]) + "x" +
                           std::to_string(OutputHeights[v.output_res]));
     put("fullscreen", std::to_string(int(v.fullscreen.load())));

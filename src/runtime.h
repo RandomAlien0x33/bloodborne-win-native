@@ -39,6 +39,7 @@ int runtime_memory_is_mapped(uintptr_t address, uint64_t size);
 /* The CPU is about to write the range outside guest code (a file read): tells the GPU side. */
 void runtime_memory_note_write(uintptr_t address, uint64_t size);
 void runtime_memory_note_cpu_write(uintptr_t address, uint64_t size);
+void runtime_memory_prepare_cpu_write(uintptr_t address, uint64_t size);
 /* bbport (frame stats): a guest thread was blocked `ns` in the runtime (0 cond, 1 mutex, 2 sema, 3 sleep). */
 void runtime_wait_note(int kind, uint64_t ns);
 void runtime_wait_report(double frames);
@@ -77,6 +78,14 @@ uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *n
 uintptr_t runtime_kernel_resolve(const char *name);
 uintptr_t runtime_file_resolve(const char *name);
 uintptr_t runtime_services_resolve(const char *name);
+/* Online play (runtime_net.c, BB_ONLINE=1): the online module answers the network and PSN imports. */
+void runtime_net_configure(const char *app0, const char *serial, const char *title, const char *version);
+int runtime_net_enabled(void);
+int runtime_net_symbol(const char *symbol);
+uintptr_t runtime_net_resolve(const char *name);
+/* Guest threads for host code (the online module's NP threads); 0 or a positive errno value. */
+int32_t runtime_thread_spawn(void **thread, void *(ABI *entry)(void *), void *argument, uint64_t stack, const char *name);
+int32_t runtime_thread_join_spawned(void *thread, void **result);
 void runtime_file_report(void);
 void runtime_file_configure(const char *app0, const char *user);
 /* The port's copy of menu/optionsetting.gfx with pop-up lists above the rows is in use. */

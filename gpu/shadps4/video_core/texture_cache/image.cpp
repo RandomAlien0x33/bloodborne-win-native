@@ -10,6 +10,7 @@
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/texture_cache/blit_helper.h"
 #include "video_core/texture_cache/image.h"
+#include "video_core/buffer_cache/buffer.h"
 
 #include <vk_mem_alloc.h>
 
@@ -112,15 +113,28 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
         return vk::DeviceSize(env ? std::strtoull(env, nullptr, 10) : 4) << 20;
     }();
     VmaAllocationCreateFlags dedicated = 0;
-    if (device && dedicated_from != 0) {
+    vk::DeviceSize required_size = 0;
+    if (device) {
         const vk::DeviceImageMemoryRequirements query{.pCreateInfo = &image_ci};
-        if (device.getImageMemoryRequirements(query).memoryRequirements.size >= dedicated_from) {
+        required_size = device.getImageMemoryRequirements(query).memoryRequirements.size;
+        if (dedicated_from != 0 && required_size >= dedicated_from) {
             dedicated = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        }
+    }
+    // bbport: near the VRAM kept for copies of the game's memory (4 GB cards), images go to
+    // system memory, read over the bus: slower, where the copies (VRAM only on NVIDIA) stopped
+    // the game. With BB_LAYER_FAVOR_COPIES=1 that leaves VRAM to the module's copies too.
+    const bool spill = Vulkan::VramReserveReached(required_size);
+    if (spill) {
+        static std::atomic<bool> reported{false};
+        if (!reported.exchange(true)) {
+            std::printf("Texture cache: VRAM is nearly full: new images go to system memory "
+                        "(slower), VRAM is kept for copies of the game's memory\n");
         }
     }
     const VmaAllocationCreateInfo alloc_ci = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | dedicated,
-        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+        .usage = spill ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
         .requiredFlags = 0,
         .preferredFlags = 0,
         .pool = VK_NULL_HANDLE,

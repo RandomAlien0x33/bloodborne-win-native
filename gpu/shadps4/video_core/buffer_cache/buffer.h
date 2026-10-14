@@ -55,6 +55,8 @@ inline bool WriteTracking() {
 bool WriteVerify();
 /// bbport BB_GPU_WRITES_VRAM=1 (buffer_cache.cpp): GPU-written buffers get VRAM copies.
 bool GpuWritesVram();
+/// bbport BB_LAYER_FAVOR_COPIES=1 (buffer_cache.cpp): copies of the game's data before images in VRAM.
+bool FavorCopies();
 /// The hybrid model (BB_WRITE_TRACKING=1 + BB_GPU_WRITES_VRAM=1): the copy shader's destinations
 /// go to VRAM as before 0.5 (in place a discrete GPU reads the geometry they hold over PCIe:
 /// 11 FPS on an RTX 4060 Laptop).

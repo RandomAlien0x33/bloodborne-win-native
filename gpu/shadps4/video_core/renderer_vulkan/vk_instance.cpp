@@ -23,6 +23,22 @@ namespace Vulkan {
 
 namespace {
 
+/// bbport BB_VRAM_LIMIT_MB=N (tests): the driver's VRAM budget taken as at most N MiB, at startup
+/// and while the game runs, so the texture collector and VRAM copies behave as on a smaller card
+/// (a 6 GB GTX 1660 Ti reports ~5600). Allocations themselves are not limited.
+u64 VramLimit() {
+    static const u64 limit = [] {
+        const char* env = std::getenv("BB_VRAM_LIMIT_MB");
+        const u64 mib = env && *env ? std::strtoull(env, nullptr, 10) : 0;
+        if (mib != 0) {
+            std::printf("GPU: VRAM budget limited to %llu MiB (BB_VRAM_LIMIT_MB)\n",
+                        (unsigned long long)mib);
+        }
+        return mib << 20;
+    }();
+    return limit;
+}
+
 std::vector<vk::PhysicalDevice> EnumeratePhysicalDevices(vk::UniqueInstance& instance) {
     auto [devices_result, devices] = instance->enumeratePhysicalDevices();
     ASSERT_MSG(devices_result == vk::Result::eSuccess, "Failed to enumerate physical devices: {}",
@@ -190,6 +206,12 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
 Instance::~Instance() {
     ImGui::Core::Shutdown(GetDevice());
     vmaDestroyAllocator(allocator);
+    for (const vk::Buffer buffer : vram_limit_buffers) {
+        device->destroyBuffer(buffer);
+    }
+    for (const vk::DeviceMemory memory : vram_limit_memory) {
+        device->freeMemory(memory);
+    }
 }
 
 std::string Instance::GetDriverVersionName() {
@@ -779,6 +801,28 @@ void VmaDeviceUsage(u64& block_bytes, u64& allocation_bytes) {
     }
 }
 
+bool VramReserveReached(u64 size) {
+    // The VRAM left for copies of the game's memory (BufferCache::AllocateResidency): NVIDIA
+    // binds its sparse buffers to VRAM only, so on a 4 GB card, once images had filled it, a
+    // 64 MiB block failed and the game stopped. BB_VRAM_RESERVE_MB=N (0: off).
+    static const u64 reserve = [] {
+        const char* env = std::getenv("BB_VRAM_RESERVE_MB");
+        return (env ? std::strtoull(env, nullptr, 10) : 384) << 20;
+    }();
+    if (!stats_instance || reserve == 0 || !stats_instance->CanReportMemoryUsage()) {
+        return false;
+    }
+    // The texture collector's figures (each submission, the budget each second) rule out most
+    // calls; the driver is asked only within 1 GiB of the mark.
+    const u64 used = BbStats::vram_used_bytes.load(std::memory_order_relaxed);
+    const u64 budget = BbStats::vram_budget_bytes.load(std::memory_order_relaxed);
+    if (budget != 0 && used + size + reserve + (1_GB) < budget) {
+        return false;
+    }
+    const u64 budget_now = stats_instance->GetDeviceMemoryBudgetNow();
+    return budget_now != 0 && stats_instance->GetDeviceMemoryUsage() + size + reserve > budget_now;
+}
+
 void Instance::CreateAllocator() {
     const VmaVulkanFunctions functions = {
         .vkGetInstanceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr,
@@ -855,7 +899,98 @@ void Instance::CollectDeviceParameters() {
     LOG_INFO(Render_Vulkan, "GPU_Vulkan_Extensions: {}", extensions);
 }
 
+void Instance::HoldVramLimit() {
+    const char* env = std::getenv("BB_VRAM_LIMIT_MB");
+    const u64 limit = env ? std::strtoull(env, nullptr, 10) << 20 : 0;
+    if (limit == 0) {
+        return;
+    }
+    u32 heap = 0;
+    for (u32 i = 0; i < memory_properties.memoryHeapCount; ++i) {
+        if ((memory_properties.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) &&
+            memory_properties.memoryHeaps[i].size > memory_properties.memoryHeaps[heap].size) {
+            heap = i;
+        }
+    }
+    const u64 heap_size = memory_properties.memoryHeaps[heap].size;
+    if (heap_size <= limit) {
+        std::printf("VRAM limit: %llu MiB asked, the card has %llu MiB: nothing held\n",
+                    (unsigned long long)(limit >> 20), (unsigned long long)(heap_size >> 20));
+        return;
+    }
+    // The limit is the size of the card simulated: what is held leaves the game the driver's
+    // budget such a card gets. The driver keeps a share of every card (Windows: ~10 %, other
+    // programs); holding heap - limit took all of this card's share out of the small one's
+    // (7956 MiB, budget 7188: 2816 MiB left for a 3.5 GB card instead of ~3.2 GB).
+    u64 budget = heap_size;
+    if (supports_memory_budget) {
+        vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget_props{};
+        vk::PhysicalDeviceMemoryProperties2 props2{.pNext = &budget_props};
+        physical_device.getMemoryProperties2(&props2);
+        if (budget_props.heapBudget[heap] != 0) {
+            budget = std::min<u64>(budget_props.heapBudget[heap], heap_size);
+        }
+    }
+    const u64 left = u64(double(limit) * double(budget) / double(heap_size));
+    // In 256 MiB pieces, each with a buffer for TouchVramLimit; less if the heap runs out.
+    constexpr u64 Piece = 256_MB;
+    const u64 want = budget > left ? budget - left : 0;
+    while (vram_limit_held < want) {
+        const u64 size = std::min(Piece, want - vram_limit_held);
+        const auto [buffer_result, buffer] = device->createBuffer(vk::BufferCreateInfo{
+            .size = size,
+            .usage = vk::BufferUsageFlagBits::eTransferDst,
+        });
+        if (buffer_result != vk::Result::eSuccess) {
+            break;
+        }
+        const vk::MemoryRequirements reqs = device->getBufferMemoryRequirements(buffer);
+        u32 type = ~0u;
+        for (u32 i = 0; i < memory_properties.memoryTypeCount; ++i) {
+            const auto& t = memory_properties.memoryTypes[i];
+            if ((reqs.memoryTypeBits & (1u << i)) && t.heapIndex == heap &&
+                (t.propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) &&
+                !(t.propertyFlags & vk::MemoryPropertyFlagBits::eHostVisible)) {
+                type = i;
+                break;
+            }
+        }
+        vk::DeviceMemory memory{};
+        if (type != ~0u) {
+            const auto [alloc_result, allocated] = device->allocateMemory(vk::MemoryAllocateInfo{
+                .allocationSize = reqs.size,
+                .memoryTypeIndex = type,
+            });
+            if (alloc_result == vk::Result::eSuccess) {
+                memory = allocated;
+            }
+        }
+        if (!memory || device->bindBufferMemory(buffer, memory, 0) != vk::Result::eSuccess) {
+            if (memory) {
+                device->freeMemory(memory);
+            }
+            device->destroyBuffer(buffer);
+            break;
+        }
+        vram_limit_memory.push_back(memory);
+        vram_limit_buffers.push_back(buffer);
+        vram_limit_held += reqs.size;
+    }
+    std::printf("VRAM limit: a %llu MiB card (BB_VRAM_LIMIT_MB): %llu of the card's %llu MiB "
+                "held, a budget of about %llu MiB left (the driver's is %llu)\n",
+                (unsigned long long)(limit >> 20), (unsigned long long)(vram_limit_held >> 20),
+                (unsigned long long)(heap_size >> 20), (unsigned long long)(left >> 20),
+                (unsigned long long)(budget >> 20));
+}
+
+void Instance::TouchVramLimit(vk::CommandBuffer cmdbuf) const {
+    for (const vk::Buffer buffer : vram_limit_buffers) {
+        cmdbuf.fillBuffer(buffer, 0, 4, 0);
+    }
+}
+
 void Instance::CollectPhysicalMemoryInfo() {
+    HoldVramLimit();
     vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
     vk::PhysicalDeviceMemoryProperties2 props = {
         .pNext = supports_memory_budget ? &budget : nullptr,
@@ -885,6 +1020,12 @@ void Instance::CollectPhysicalMemoryInfo() {
         }
         // If memory budget is not supported, use the size of the heap as the budget.
         total_memory_budget += memory_props.memoryHeaps[i].size;
+    }
+    // bbport: the memory HoldVramLimit holds is not this card's (as on a card without it).
+    total_memory_budget -= std::min(total_memory_budget, vram_limit_held);
+    device_initial_usage -= std::min(device_initial_usage, vram_limit_held);
+    if (VramLimit() != 0) {
+        total_memory_budget = std::min(total_memory_budget, VramLimit());
     }
     if (!IsIntegrated()) {
         // We reserve some memory for the system.
@@ -966,7 +1107,7 @@ u64 Instance::GetDeviceMemoryUsage() const {
     for (const size_t heap : valid_heaps) {
         total_usage += memory_budget_props.heapUsage[heap];
     }
-    return total_usage;
+    return total_usage - std::min(total_usage, vram_limit_held);
 }
 
 u64 Instance::GetDeviceMemoryBudgetNow() const {
@@ -980,7 +1121,8 @@ u64 Instance::GetDeviceMemoryBudgetNow() const {
     for (const size_t heap : valid_heaps) {
         total_budget += memory_budget_props.heapBudget[heap];
     }
-    return total_budget;
+    total_budget -= std::min(total_budget, vram_limit_held);
+    return VramLimit() != 0 ? std::min(total_budget, VramLimit()) : total_budget;
 }
 
 vk::FormatFeatureFlags2 Instance::GetFormatFeatureFlags(vk::Format format) const {

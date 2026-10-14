@@ -78,9 +78,28 @@ inline constexpr int CheatCount = int(sizeof(Cheats) / sizeof(Cheats[0]));
 inline constexpr int OutputWidths[] = {1280, 1920, 2560, 3840};
 inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
 inline constexpr int OutputCount = 4;
-/// bbport.ini memory_model, read by the launcher at start (scripts/run_game.py).
-enum MemoryModel : int { MemoryClassic = 0, MemoryHybrid = 1, MemoryDirect = 2, MemoryModelCount };
-inline constexpr const char* MemoryModelKeys[MemoryModelCount] = {"classic", "hybrid", "direct"};
+/// bbport.ini memory_model, read by the launcher at start: scripts/run_game.py MEMORY_MODELS sets
+/// each one's environment under the same key. A new model: its row here (the menus list them in
+/// this order) and its entry there. Integrated GPU (direct) stays last: discrete GPUs are not
+/// offered it (the menus show the models before it).
+enum MemoryModel : int {
+    MemoryClassic = 0,
+    MemoryHybrid,
+    MemoryExperimental1,
+    MemoryDirect,
+    MemoryModelCount
+};
+struct MemoryModelInfo {
+    const char* key; ///< bbport.ini memory_model
+    const char* label;
+    const char* label_ru;
+};
+inline constexpr MemoryModelInfo MemoryModels[MemoryModelCount] = {
+    {"classic", "Classic", "Классический"},
+    {"hybrid", "Hybrid", "Гибрид"},
+    {"experimental1", "Experimental 1", "Экспериментальный 1"},
+    {"direct", "Integrated GPU", "Встроенная графика"},
+};
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
 
 struct Values {

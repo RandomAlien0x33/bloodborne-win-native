@@ -6,6 +6,8 @@
 // bbport: glue between the C loader and the vendored shadPS4 video core.
 #include "bbport_overlay.h"
 #include "bbport_settings.h"
+#include "game_profile.h"
+#include "bbport_guest_hooks.h"
 #include "bbport_copy.h"
 #include "bbport_free_check.h"
 #include "bbport_toggles.h"
@@ -265,6 +267,8 @@ static void StartProfileWriter() {
 
 extern "C" int bbgpu_init(const BbGpuConfig* config) {
     BbSettings::Load();
+    // What the translator knows about this game (games/), before anything asks for it.
+    Game::Select(config->serial);
 #ifdef BB_PGO_GENERATE
     StartProfileWriter();
 #endif
@@ -358,6 +362,7 @@ extern "C" void bbgpu_patch_image(unsigned char* image, uint64_t size) {
     BbGameMenu::PatchImage(image, size);
     BbCheats::PatchImage(image, size);
     BbMouseCamera::PatchImage(image, size);
+    BbGuestHooks::PatchImage(image, size);
 }
 
 extern "C" int bbgpu_mouse_take(float* dx, float* dy, uint32_t* buttons) {

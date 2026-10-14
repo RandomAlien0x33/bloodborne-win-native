@@ -14,4 +14,7 @@ using RangeCallback = void (*)(std::uint64_t address, std::uint64_t size);
 
 /// Installs the hooks once (GPU side, after the game is loaded).
 void Install(RangeCallback on_gpu_range_allocated);
+/// Windows: writes the hooks into the image before the game runs (bbgpu_patch_image); Install then
+/// only hands over the callback. Linux installs them in Install.
+void PatchImage(unsigned char* image, std::uint64_t size);
 } // namespace BbGuestHooks

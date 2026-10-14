@@ -65,6 +65,7 @@ std::array<std::atomic<u64>, MemcpySites.size()> hits{};
 
 /// The game's memcpy at those sites: the copy, then the GPU side is told of the data now there.
 void* LoaderCopy(void* dst, const void* src, std::size_t size) {
+    runtime_memory_note_write(reinterpret_cast<u64>(dst), size);
     std::memcpy(dst, src, size);
     runtime_memory_note_write(reinterpret_cast<u64>(dst), size);
     return dst;
@@ -418,10 +419,244 @@ void Install(RangeCallback on_gpu_range_allocated) {
         Patch(ImageBase + ReleaseCheck, ReleaseCheckCode, sizeof(ReleaseCheckCode));
     }
 }
+
+void PatchImage(unsigned char*, std::uint64_t) {}
 } // namespace BbGuestHooks
 #else
-#include <cstdint>
+// bbport (Windows): the same sites as native detours, written while the image is patched before
+// the game runs (bbgpu_patch_image): no int3 traps and no threads meeting a half-written jump.
+// The BufferCache hands its callback over later (Install); allocations before that go unseen,
+// as on Linux, where the hooks go in at the same point.
+#include <windows.h>
+#include <array>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+extern "C" void runtime_memory_note_write(uintptr_t address, uint64_t size);
+extern "C" void* runtime_low_map(size_t size, int prot);
+
 namespace BbGuestHooks {
-void Install(RangeCallback) {}
+namespace {
+using u64 = std::uint64_t;
+using u8 = std::uint8_t;
+#define GUEST_ABI __attribute__((sysv_abi))
+
+/// See the Linux part above for what each site is.
+constexpr u64 AllocReturn = 0x26aa255;
+constexpr std::array<u64, 3> HeapAllocReturns = {0x11e6629, 0x11e6736, 0x11e6846};
+struct CallSite {
+    u64 offset;
+    unsigned char code[5];
+};
+constexpr std::array<CallSite, 2> MemcpySites = {{
+    {0x216d5ea, {0xe8, 0xc1, 0xcb, 0x4a, 0x00}},
+    {0x2171fea, {0xe8, 0xc1, 0x81, 0x4a, 0x00}},
+}};
+std::atomic<RangeCallback> on_range_allocated{nullptr};
+
+/// Called from the game's code: its calling convention.
+GUEST_ABI void* LoaderCopy(void* dst, const void* src, std::size_t size) {
+    // Told before (its write traps lift: no fault per page) and after the copy (the data there).
+    runtime_memory_note_write(reinterpret_cast<u64>(dst), size);
+    std::memcpy(dst, src, size);
+    runtime_memory_note_write(reinterpret_cast<u64>(dst), size);
+    return dst;
+}
+
+GUEST_ABI void AllocHook(u64 node) {
+    const RangeCallback callback = on_range_allocated.load(std::memory_order_acquire);
+    if (!callback || !node) {
+        return;
+    }
+    const u64 start = *reinterpret_cast<const u64*>(node + 8);
+    const u64 next = *reinterpret_cast<const u64*>(node + 0x18);
+    const u64 end = next ? *reinterpret_cast<const u64*>(next + 8) : start;
+    if (end > start && end - start < (u64(1) << 32)) {
+        callback(start, end - start);
+    }
+}
+
+GUEST_ABI void HeapHook(u64 address, u64 size) {
+    const RangeCallback callback = on_range_allocated.load(std::memory_order_acquire);
+    if (callback && address != 0 && size != 0 && size < (u64(1) << 32)) {
+        callback(address, size);
+    }
+}
+
+struct Emitter {
+    std::array<u8, 256> code{};
+    std::size_t size = 0;
+    void Bytes(std::initializer_list<u8> bytes) {
+        for (const u8 b : bytes) {
+            code[size++] = b;
+        }
+    }
+    void U32(std::uint32_t v) {
+        std::memcpy(&code[size], &v, 4);
+        size += 4;
+    }
+    void U64(u64 v) {
+        std::memcpy(&code[size], &v, 8);
+        size += 8;
+    }
+    /// Saves the registers the handler may change (the game's convention), aligns the stack.
+    void SaveVolatile() {
+        Bytes({0x50, 0x51, 0x52, 0x56, 0x57, 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53});
+        Bytes({0x41, 0x54});             // push r12 (holds the unaligned stack pointer)
+        Bytes({0x49, 0x89, 0xe4});       // mov r12, rsp
+        Bytes({0x48, 0x83, 0xe4, 0xf0}); // and rsp, -16
+    }
+    void CallAbs(const void* fn) {
+        Bytes({0x48, 0xb8}); // movabs rax, fn
+        U64(reinterpret_cast<u64>(fn));
+        Bytes({0xff, 0xd0}); // call rax
+    }
+    void RestoreVolatile() {
+        Bytes({0x4c, 0x89, 0xe4}); // mov rsp, r12
+        Bytes({0x41, 0x5c});       // pop r12
+        Bytes({0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58, 0x5f, 0x5e, 0x5a, 0x59, 0x58});
+    }
+};
+
+u8* stub_page = nullptr;
+std::size_t stub_used = 0;
+constexpr std::size_t StubPageSize = 4096;
+
+bool Rel32To(u64 from_next, u64 to, std::uint32_t& rel) {
+    const std::int64_t d = std::int64_t(to) - std::int64_t(from_next);
+    if (d < INT32_MIN || d > INT32_MAX) {
+        return false;
+    }
+    rel = std::uint32_t(std::int32_t(d));
+    return true;
+}
+
+/// Places `e` (ending in `jmp back` when back != 0) in the stub page; its address, or 0.
+u64 PlaceStub(Emitter& e, u64 back) {
+    if (!stub_page || stub_used + e.size + 5 > StubPageSize) {
+        return 0;
+    }
+    u8* at = stub_page + stub_used;
+    if (back != 0) {
+        std::uint32_t rel = 0;
+        if (!Rel32To(reinterpret_cast<u64>(at) + e.size + 5, back, rel)) {
+            return 0;
+        }
+        e.Bytes({0xe9});
+        e.U32(rel);
+    }
+    std::memcpy(at, e.code.data(), e.size);
+    stub_used += (e.size + 15) & ~std::size_t(15);
+    return reinterpret_cast<u64>(at);
+}
+
+/// `opcode rel32` to `stub` at `site` (the image is still writable).
+bool WriteJump(u8* site, u8 opcode, u64 stub) {
+    std::uint32_t rel = 0;
+    if (!stub || !Rel32To(reinterpret_cast<u64>(site) + 5, stub, rel)) {
+        return false;
+    }
+    site[0] = opcode;
+    std::memcpy(site + 1, &rel, 4);
+    return true;
+}
+
+bool HookAllocReturn(u8* image) {
+    // `add rsp, 0x18; pop rbx` (5 bytes) in the allocator's epilogue; rax: the node.
+    u8* site = image + AllocReturn;
+    static constexpr u8 Code[5] = {0x48, 0x83, 0xc4, 0x18, 0x5b};
+    if (std::memcmp(site, Code, sizeof(Code)) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.SaveVolatile();
+    e.Bytes({0x48, 0x89, 0xc7}); // mov rdi, rax
+    e.CallAbs(reinterpret_cast<const void*>(&AllocHook));
+    e.RestoreVolatile();
+    e.Bytes({0x48, 0x83, 0xc4, 0x18}); // add rsp, 0x18
+    e.Bytes({0x5b});                   // pop rbx
+    return WriteJump(site, 0xe9, PlaceStub(e, reinterpret_cast<u64>(site) + 5));
+}
+
+bool HookHeapReturn(u8* image, u64 offset) {
+    // `mov rbx, rax; test rbx, rbx` (6 bytes) after the heap call; [rbp - 0x50]: the size.
+    u8* site = image + offset;
+    static constexpr u8 Code[6] = {0x48, 0x89, 0xc3, 0x48, 0x85, 0xdb};
+    if (std::memcmp(site, Code, sizeof(Code)) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.Bytes({0x48, 0x89, 0xc3});                               // mov rbx, rax
+    e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0xff, 0xff, 0xff}); // lea rsp, [rsp - 128] (red zone)
+    e.SaveVolatile();
+    e.Bytes({0x48, 0x89, 0xdf});       // mov rdi, rbx
+    e.Bytes({0x48, 0x8b, 0x75, 0xb0}); // mov rsi, [rbp - 0x50]
+    e.CallAbs(reinterpret_cast<const void*>(&HeapHook));
+    e.RestoreVolatile();
+    e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0x00, 0x00, 0x00}); // lea rsp, [rsp + 128]
+    e.Bytes({0x48, 0x85, 0xdb});                               // test rbx, rbx
+    if (!WriteJump(site, 0xe9, PlaceStub(e, reinterpret_cast<u64>(site) + 6))) {
+        return false;
+    }
+    site[5] = 0xcc; // never reached: the stub jumps back past it
+    return true;
+}
+
+bool HookCopyCall(u8* image, const CallSite& call) {
+    u8* site = image + call.offset;
+    if (std::memcmp(site, call.code, sizeof(call.code)) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.Bytes({0xff, 0x25, 0x00, 0x00, 0x00, 0x00}); // jmp [rip]
+    e.U64(reinterpret_cast<u64>(&LoaderCopy));
+    return WriteJump(site, 0xe8, PlaceStub(e, 0));
+}
+
+bool Wanted() {
+    // Only with the game's memory in place (the launcher sets BB_GUEST_IN_PLACE from the memory
+    // model before the game starts); BB_GUEST_HOOKS=0 leaves the game's code alone.
+    const char* in_place = std::getenv("BB_GUEST_IN_PLACE");
+    const char* hooks = std::getenv("BB_GUEST_HOOKS");
+    return in_place && in_place[0] == '1' && !(hooks && hooks[0] == '0');
+}
+} // namespace
+
+void PatchImage(unsigned char* image, std::uint64_t) {
+    if (!Wanted()) {
+        return;
+    }
+    auto* p = static_cast<u8*>(runtime_low_map(StubPageSize, 3));
+    const u64 base = reinterpret_cast<u64>(image), at = reinterpret_cast<u64>(p);
+    if (!p || (at > base ? at - base : base - at) >= (2000ull << 20)) {
+        std::printf("Guest hooks: no memory near the image, not installed\n");
+        return;
+    }
+    stub_page = p;
+    int copies = 0, heap = 0;
+    for (const auto& call : MemcpySites) {
+        copies += HookCopyCall(image, call);
+    }
+    const bool allocator = HookAllocReturn(image);
+    const char* heap_env = std::getenv("BB_HEAP_HOOKS");
+    if (!heap_env || heap_env[0] != '0') {
+        for (const u64 site : HeapAllocReturns) {
+            heap += HookHeapReturn(image, site);
+        }
+    }
+    DWORD old = 0;
+    VirtualProtect(stub_page, StubPageSize, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), stub_page, StubPageSize);
+    std::printf("Guest hooks: %d of %zu resource copy sites tell the GPU side of their writes; "
+                "GPU heap allocations seen at %d of %zu call sites; GPU memory allocator %s\n",
+                copies, MemcpySites.size(), heap, HeapAllocReturns.size(),
+                allocator ? "hooked" : "not found");
+}
+
+void Install(RangeCallback on_gpu_range_allocated) {
+    on_range_allocated.store(on_gpu_range_allocated, std::memory_order_release);
+}
 } // namespace BbGuestHooks
 #endif

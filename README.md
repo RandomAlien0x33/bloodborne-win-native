@@ -14,7 +14,23 @@
   port's menu (**Cheats** tab). See [Cheats](#cheats).
 - **DLSS, FSR 4, FSR 3.1**, output up to 4K, unlocked frame rate.
 
-**[Download v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip)** (Windows 10/11, 116 MB)
+<br>
+
+<h2 align="center">⬇️ <a href="https://github.com/RandomAlien0x33/bloodborne-win-native/releases/latest">Download the latest version</a></h2>
+
+<p align="center">
+<a href="https://github.com/RandomAlien0x33/bloodborne-win-native/releases/latest"><img src="https://img.shields.io/github/v/release/RandomAlien0x33/bloodborne-win-native?label=Download&color=2ea44f&style=for-the-badge&logo=windows&logoColor=white" height="44" alt="Download the latest version"></a>
+<br>
+Windows 10/11 · 116 MB · no game files included
+</p>
+
+> [!CAUTION]
+> **Graphics card with 4 GB of memory or less?** If the game crashes or the frame rate drops
+> sharply after a while of playing, try the other memory modes: in the game's menu
+> **System → Additional → Memory mode** (or the port's menu, Insert) choose **Hybrid**, and if
+> that does not help, **Experimental 1**. The game needs a restart after the change.
+
+<br>
 
 <p>
 <a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="32%" alt="Bloodborne Windows Native on YouTube: new video"></a>
@@ -56,7 +72,7 @@ translated to Vulkan.
 - **Settings in the game's own System menu** (Display, Game effects, Additional) and in the
   port's menu (**Insert** or L3+R3).
 - **Mouse and keyboard:** the mouse turns the camera directly, as in PC games.
-- **Memory modes:** Classic (most tested) and Hybrid (faster on graphics cards).
+- **Memory modes:** Classic (most tested), Hybrid (faster on graphics cards; the best on 4 GB cards) and Experimental 1 (graphics memory never grows past the budget; slower).
 - **Save copies** from the pause menu and with F5 / F8 (see [Saves](#saves)).
 - **Cheats** in the System menu and the port's menu (see [Cheats](#cheats)).
 - The port's menus in the game's language (English or Russian).
@@ -70,7 +86,7 @@ translated to Vulkan.
 
 ## Getting started
 
-1. [Download v1.04](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/download/v1.04/bloodborne-win-native-v1.04.zip) and unpack it.
+1. [Download the latest version](https://github.com/RandomAlien0x33/bloodborne-win-native/releases/latest) (the `.zip` file under Assets) and unpack it.
 2. In `bbport.ini` set the game folder:
    ```ini
    game_dir=D:\Games\CUSA03173

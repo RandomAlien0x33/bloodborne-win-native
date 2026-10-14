@@ -300,8 +300,13 @@ void DefineTexts() {
     row(Memory, "Memory mode", "Режим памяти",
         "Hybrid is faster; if the game crashes, choose Classic. After a restart",
         "Гибрид быстрее; если игра вылетает, выберите Классический. После перезапуска",
-        {AddText("Classic", "Классический"), AddText("Hybrid", "Гибрид"),
-         AddText("Integrated GPU", "Встроенная графика")});
+        [] {
+            std::vector<u32> labels;
+            for (const auto& m : BbSettings::MemoryModels) {
+                labels.push_back(AddText(m.label, m.label_ru));
+            }
+            return labels;
+        }());
     memory_help = pages.back().rows.back().help;
     memory_help_integrated =
         AddText("Hybrid is faster, Integrated GPU has no copies; on crashes choose Classic. After a restart",
