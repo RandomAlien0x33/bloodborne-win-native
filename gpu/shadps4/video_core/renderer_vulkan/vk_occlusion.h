@@ -62,6 +62,11 @@ public:
     /// whether the event's results were on the CPU by then. False: not such a page.
     bool OnAccess(VAddr address, u64 rip, bool write, bool gpu_thread);
 
+    /// The render pass about to begin, as an area relative to the game's target (the rasterizer's
+    /// target_scale.x * .y: a reduced scene 1/4 or 1/9, the output-size UI 4): the samples counted
+    /// in it are scaled to the game's resolution, as the PS4 would have counted them.
+    void SetPassScale(float area_scale);
+
     void Suspend(bool inside_render_pass) override;
     void Resume(bool inside_render_pass) override;
 
@@ -105,6 +110,8 @@ private:
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniquePipeline pipeline;
     std::vector<Pending> pending;
+    u32 pass_scale = 256;                   ///< the current pass's sample factor, 8.8 fixed point
+    std::array<u32, NumSlots> slot_scale{}; ///< per query slot: its pass's factor
     u64 begun = 0;       ///< segments begun (the next one uses slot begun % NumSlots)
     u64 resolved = 0;    ///< segments added to the total
     u64 reset_until = 0; ///< slots below it (absolute) are reset and unused

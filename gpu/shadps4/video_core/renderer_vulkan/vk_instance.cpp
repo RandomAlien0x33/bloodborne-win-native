@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstdio>
 #include <boost/container/static_vector.hpp>
 #include <fmt/format.h>
@@ -728,6 +729,34 @@ bool Instance::CreateDevice() {
     }
 
     auto [device_result, dev] = physical_device.createDeviceUnique(device_chain.get());
+    // bbport (deadinside28's 0.6, #135 #147; PR #140): a driver may list NGX's extensions while
+    // what they need is missing (ErrorInitializationFailed). DLSS is optional: once more without
+    // them, and the upscaler falls back to FSR.
+    bool dlss_device = true;
+    const auto is_dlss_extension = [&](const char* name) {
+        const std::string_view e{name};
+        return e == VK_NVX_BINARY_IMPORT_EXTENSION_NAME ||
+               e == VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME ||
+               std::any_of(dlss_extensions.begin(), dlss_extensions.end(),
+                           [&](const char* d) { return e == d; });
+    };
+    if (device_result != vk::Result::eSuccess &&
+        std::any_of(enabled_extensions.begin(), enabled_extensions.end(), is_dlss_extension)) {
+        std::printf("GPU: Vulkan device creation with the DLSS extensions failed (%s): again "
+                    "without them, no DLSS\n",
+                    vk::to_string(device_result).c_str());
+        enabled_extensions.erase(std::remove_if(enabled_extensions.begin(),
+                                                enabled_extensions.end(), is_dlss_extension),
+                                 enabled_extensions.end());
+        auto& create_info = device_chain.get<vk::DeviceCreateInfo>();
+        create_info.enabledExtensionCount = static_cast<u32>(enabled_extensions.size());
+        create_info.ppEnabledExtensionNames = enabled_extensions.data();
+        this->dlss_extensions = false;
+        dlss_device = false;
+        auto retry = physical_device.createDeviceUnique(device_chain.get());
+        device_result = retry.result;
+        dev = std::move(retry.value);
+    }
     if (device_result != vk::Result::eSuccess) {
         LOG_CRITICAL(Render_Vulkan, "Failed to create device: {}", vk::to_string(device_result));
         return false;
@@ -735,7 +764,35 @@ bool Instance::CreateDevice() {
     device = std::move(dev);
 
     VULKAN_HPP_DEFAULT_DISPATCHER.init(*device);
-    if (Dlss* dlss = Dlss::Get()) {
+    // bbport (deadinside28's 0.6, #161 #177): an extension the driver lists and enables but whose
+    // commands it does not resolve counts as missing: calling them jumped to address 0 (NVIDIA
+    // 595, Intel ANV).
+    const auto& dispatch = VULKAN_HPP_DEFAULT_DISPATCHER;
+    const auto require = [](bool& flag, const void* command, const char* name) {
+        if (flag && !command) {
+            std::printf("GPU: %s is enabled but the driver does not resolve its commands: off\n",
+                        name);
+            flag = false;
+        }
+    };
+    require(buffer_marker, reinterpret_cast<const void*>(dispatch.vkCmdWriteBufferMarkerAMD),
+            VK_AMD_BUFFER_MARKER_EXTENSION_NAME);
+    require(vertex_input_dynamic_state,
+            reinterpret_cast<const void*>(dispatch.vkCmdSetVertexInputEXT),
+            VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME);
+    require(dynamic_state_3, reinterpret_cast<const void*>(dispatch.vkCmdSetColorWriteMaskEXT),
+            VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME);
+    bool host_import = host_memory_import;
+    require(host_import,
+            reinterpret_cast<const void*>(dispatch.vkGetMemoryHostPointerPropertiesEXT),
+            VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    if (!host_import) {
+        host_memory_import = false;
+#ifdef _WIN32
+        guest_memory_import = false;
+#endif
+    }
+    if (Dlss* dlss = Dlss::Get(); dlss && dlss_device) {
         dlss->Initialize(*instance, physical_device, *device);
     }
 

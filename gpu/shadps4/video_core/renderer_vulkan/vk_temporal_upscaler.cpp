@@ -22,6 +22,8 @@
 #include "video_core/host_shaders/taa_comp.h"
 #include "video_core/host_shaders/taa_sharpen_comp.h"
 #include "video_core/host_shaders/taa_sharpen_ldr_comp.h"
+#include "video_core/host_shaders/taa_sharpen_fused_comp.h"
+#include "video_core/host_shaders/taa_sharpen_fused_srgb_comp.h"
 #include "video_core/host_shaders/fsr4_decode_comp.h"
 #include "video_core/host_shaders/fsr4_encode_comp.h"
 #include "video_core/host_shaders/fsr4_reactive_comp.h"
@@ -695,6 +697,9 @@ void TemporalUpscaler::CreatePipelines() {
     storage_layout(2, taa_sharpen_desc_layout, taa_sharpen_pipeline_layout, sizeof(float));
     taa_sharpen_pipeline = compute(TAA_SHARPEN_COMP, *taa_sharpen_pipeline_layout);
     taa_sharpen_ldr_pipeline = compute(TAA_SHARPEN_LDR_COMP, *taa_sharpen_pipeline_layout);
+    taa_sharpen_fused_pipeline = compute(TAA_SHARPEN_FUSED_COMP, *taa_sharpen_pipeline_layout);
+    taa_sharpen_fused_srgb_pipeline =
+        compute(TAA_SHARPEN_FUSED_SRGB_COMP, *taa_sharpen_pipeline_layout);
     storage_layout(1, fsr4_encode_desc_layout, fsr4_encode_pipeline_layout, sizeof(u32));
     fsr4_encode_pipeline = compute(FSR4_ENCODE_COMP, *fsr4_encode_pipeline_layout);
     {
@@ -857,13 +862,76 @@ void TemporalUpscaler::RecordTaa(vk::CommandBuffer cmdbuf, vk::ImageView color,
     taa_next = 1 - taa_next;
 }
 
-void TemporalUpscaler::ExtraSharpen(vk::Image target, bool ldr, u32 w, u32 h) {
+// The sharpening ExtraSharpen adds (0: none).
+static float ExtraSharpness() {
     const auto& settings = BbSettings::Get();
     // FSR 3 and 4 sharpen up to 1 themselves (RCAS). DLSS has no sharpening of its own (NVIDIA
     // retired its Sharpness parameter), so for DLSS this pass applies the whole 0..2.
     const float own = settings.upscaler == BbSettings::UpscalerDlss ? 0.0f : 1.0f;
     const float extra = std::clamp(settings.sharpness.load(), 0.0f, 2.0f) - own;
-    if (!settings.sharpen || extra <= 0.0f) {
+    return settings.sharpen && extra > 0.0f ? extra : 0.0f;
+}
+
+bool TemporalUpscaler::SharpenIntoUi(u32 w, u32 h) {
+    // DLSS / FSR 4 output: one pass reads it and writes the sharpened frame into the UI image
+    // (1440p: 0.8 ms for a copy into an rgba32f image, the pass and a blit). BB_FUSED_SHARPEN=0:
+    // the three steps as before (A/B).
+    static const bool fused = [] {
+        const char* env = std::getenv("BB_FUSED_SHARPEN");
+        return !env || env[0] != '0';
+    }();
+    const float extra = ExtraSharpness();
+    const bool srgb = ui_format == vk::Format::eR8G8B8A8Srgb;
+    if (!fused || extra <= 0.0f || (!srgb && ui_format != vk::Format::eR8G8B8A8Unorm)) {
+        return false;
+    }
+    if (!ui_storage_view) {
+        ui_storage_view = Check(instance.GetDevice().createImageViewUnique({
+            .image = vk::Image(ui_image), .viewType = vk::ImageViewType::e2D,
+            .format = vk::Format::eR8G8B8A8Unorm,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        }));
+    }
+    scheduler.RecordCrumb({.name = "upscaler sharpen into UI"},
+                          [source = vk::Image(output_image), target = vk::Image(ui_image),
+                           source_view = *output_view, target_view = *ui_storage_view, extra, w, h,
+                           pipeline = srgb ? *taa_sharpen_fused_srgb_pipeline
+                                           : *taa_sharpen_fused_pipeline,
+                           layout = *taa_sharpen_pipeline_layout](vk::CommandBuffer cmdbuf) {
+        constexpr auto all = vk::PipelineStageFlagBits2::eAllCommands;
+        constexpr auto rw = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+        const std::array<vk::ImageMemoryBarrier2, 2> before{{
+            {.srcStageMask = all, .srcAccessMask = rw,
+             .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+             .dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead,
+             .oldLayout = vk::ImageLayout::eGeneral, .newLayout = vk::ImageLayout::eGeneral,
+             .image = source, .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}},
+            {.srcStageMask = all, .srcAccessMask = rw,
+             .dstStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+             .dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+             .oldLayout = vk::ImageLayout::eGeneral, .newLayout = vk::ImageLayout::eGeneral,
+             .image = target, .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}},
+        }};
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = u32(before.size()),
+                                 .pImageMemoryBarriers = before.data()});
+        const std::array<vk::DescriptorImageInfo, 2> infos{{
+            {.imageView = source_view, .imageLayout = vk::ImageLayout::eGeneral},
+            {.imageView = target_view, .imageLayout = vk::ImageLayout::eGeneral}}};
+        std::array<vk::WriteDescriptorSet, 2> writes{};
+        for (u32 i = 0; i < writes.size(); ++i)
+            writes[i] = {.dstBinding = i, .descriptorCount = 1,
+                .descriptorType = vk::DescriptorType::eStorageImage, .pImageInfo = &infos[i]};
+        cmdbuf.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
+        cmdbuf.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, layout, 0, writes);
+        cmdbuf.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(extra), &extra);
+        cmdbuf.dispatch((w + 7) / 8, (h + 7) / 8, 1);
+    });
+    return true;
+}
+
+void TemporalUpscaler::ExtraSharpen(vk::Image target, bool ldr, u32 w, u32 h) {
+    const float extra = ExtraSharpness();
+    if (extra <= 0.0f) {
         return;
     }
     const auto device = instance.GetDevice();
@@ -1947,30 +2015,38 @@ void TemporalUpscaler::RunScaled() {
         }
         if (ok4) {
             mark("upscaler: sharpen and copy to UI image");
-            if (BbSettings::Get().upscaler != BbSettings::UpscalerTaa) {
-                ExtraSharpen(vk::Image(output_image), false, ow, oh);
+            const bool taa = BbSettings::Get().upscaler == BbSettings::UpscalerTaa;
+            if (!taa && SharpenIntoUi(ow, oh)) {
+                barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor,
+                        vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderStorageWrite, vk::ImageLayout::eGeneral,
+                        vk::PipelineStageFlagBits2::eColorAttachmentOutput, color_access);
+            } else {
+                if (!taa) {
+                    ExtraSharpen(vk::Image(output_image), false, ow, oh);
+                }
+                barrier(vk::Image(output_image), vk::ImageAspectFlagBits::eColor,
+                        vk::ImageLayout::eGeneral, all, rw, vk::ImageLayout::eGeneral,
+                        vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferRead);
+                barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor,
+                        vk::ImageLayout::eGeneral, all, rw, vk::ImageLayout::eGeneral,
+                        vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferWrite);
+                const vk::ImageBlit region{
+                    .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                    .srcOffsets = std::array{vk::Offset3D{0, 0, 0},
+                                             vk::Offset3D{s32(ow), s32(oh), 1}},
+                    .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+                    .dstOffsets = std::array{vk::Offset3D{0, 0, 0},
+                                             vk::Offset3D{s32(ow), s32(oh), 1}},
+                };
+                cmdbuf.blitImage(vk::Image(output_image), vk::ImageLayout::eGeneral,
+                                 vk::Image(ui_image), vk::ImageLayout::eGeneral, region,
+                                 vk::Filter::eNearest);
+                barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor,
+                        vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eBlit,
+                        vk::AccessFlagBits2::eTransferWrite, vk::ImageLayout::eGeneral,
+                        vk::PipelineStageFlagBits2::eColorAttachmentOutput, color_access);
             }
-            barrier(vk::Image(output_image), vk::ImageAspectFlagBits::eColor,
-                    vk::ImageLayout::eGeneral, all, rw, vk::ImageLayout::eGeneral,
-                    vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferRead);
-            barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor,
-                    vk::ImageLayout::eGeneral, all, rw, vk::ImageLayout::eGeneral,
-                    vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferWrite);
-            const vk::ImageBlit region{
-                .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-                .srcOffsets = std::array{vk::Offset3D{0, 0, 0},
-                                         vk::Offset3D{s32(ow), s32(oh), 1}},
-                .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
-                .dstOffsets = std::array{vk::Offset3D{0, 0, 0},
-                                         vk::Offset3D{s32(ow), s32(oh), 1}},
-            };
-            cmdbuf.blitImage(vk::Image(output_image), vk::ImageLayout::eGeneral,
-                             vk::Image(ui_image), vk::ImageLayout::eGeneral, region,
-                             vk::Filter::eNearest);
-            barrier(vk::Image(ui_image), vk::ImageAspectFlagBits::eColor,
-                    vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eBlit,
-                    vk::AccessFlagBits2::eTransferWrite, vk::ImageLayout::eGeneral,
-                    vk::PipelineStageFlagBits2::eColorAttachmentOutput, color_access);
             reset = false;
             dispatched_last_frame = true;
             if (const int dump = DumpFrame(); dump >= 0) {

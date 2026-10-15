@@ -742,6 +742,7 @@ void Scheduler::LeaveDirectSegment() {
 }
 
 void Scheduler::RecorderThread(std::stop_token stoken, u32 index) {
+    BbThreads::gpu_side_helper = true; // the submissions go out from here (ordered tasks)
     if (index == 0) {
         Common::SetCurrentThreadName("bb:VkRecorder");
     } else {

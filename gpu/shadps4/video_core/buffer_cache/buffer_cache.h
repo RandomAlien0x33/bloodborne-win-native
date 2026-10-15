@@ -118,10 +118,15 @@ public:
     /// Flushes any GPU modified buffer in the logical page range back to CPU memory.
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool assume_locks = false);
 
+    /// Who hit a read trap: a guest (or runtime) thread, the GPU command thread (stage A, the
+    /// draw pipe drained) or the draw recording thread (stage B: it may not record or flush).
+    enum class TrapCaller { Guest, CommandThread, RecordingThread };
     /// bbport BB_LAYER_READ_TRAPS: a CPU access hit a page whose newest data the GPU wrote into a
     /// VRAM copy only: the block's GPU data is copied back into the game's memory first (on the
     /// GPU command thread unless `assume_locks`). False: not such a page.
-    bool LayerReadTrapHit(VAddr address, bool assume_locks);
+    bool LayerReadTrapHit(VAddr address, TrapCaller caller);
+    /// BB_LAYER_PROBE (diagnostics): a CPU access to a probed page, counted; the trap goes.
+    bool LayerProbeHit(VAddr address, u64 rip, bool write, bool gpu_thread);
 
     /// bbport: a new draw or dispatch is being recorded: the per-binding housekeeping of
     /// EnsureResident (unmaps, demotions, assets, late writes) runs once for it, not per binding.
@@ -238,6 +243,23 @@ public:
     /// the part in place (the descriptor range is clamped to the buffer).
     std::optional<std::pair<const Buffer*, u64>> LayerInPlace(VAddr address, u64 size,
                                                               bool clamp_huge = false);
+    std::optional<std::pair<const Buffer*, u64>> LayerInPlaceUncached(VAddr address, u64 size,
+                                                                      bool clamp_huge);
+    /// bbport (deadinside28's 0.6): reading bindings LayerBind resolved to a whole mirror or in
+    /// place, reused while nothing moved (layer_generation), the CPU marked nothing modified
+    /// anywhere (BbMem::cpu_change_epoch: no upload can be due) and within the same second (the
+    /// idle tracking's use marks are per second). BB_BIND_MEMO=0: every binding takes the full path.
+    struct BindMemo {
+        VAddr address = 0;
+        u64 size = 0, generation = 0, epoch = 0, offset = 0;
+        const Buffer* buffer = nullptr;
+        u32 second = 0;
+        bool vram = false;
+    };
+    static BindMemo& BindMemoSlot(VAddr address, u64 size);
+    static bool BindMemoOn();
+    void StoreBindMemo(VAddr address, u64 size, u64 epoch, const Buffer* buffer, u64 offset,
+                       bool vram);
     /// Whether any part of the range is.
     [[nodiscard]] bool IsAnyInPlace(VAddr addr, u64 size) const {
         if (LayerActive() && size != 0) {
@@ -511,6 +533,11 @@ private:
     /// in VRAM (layer_cpu_blocks). On NVIDIA shaders reading the game's memory over the bus were
     /// slow where the model of 0.3 had copies in VRAM.
     IntervalList<> layer_watched;
+    /// Blocks a range the GPU writes covers only in part (its first and last, the rest of them
+    /// unannounced bytes), moved to VRAM with it all the same (LayerBind): a trap catches the CPU
+    /// writing beside it, and the GPU's bytes there are copied back before the block goes in place.
+    /// A frame-sized buffer of 305 blocks went in place for two such blocks (deadinside28's #149).
+    IntervalList<> layer_edge_blocks;
     /// Watched blocks that went back in place for writes (LayerDemote): not watched again.
     IntervalList<> layer_watch_failed;
     std::unordered_map<u64, u8> layer_watch_strikes; ///< watched blocks sent back for requests
@@ -535,7 +562,20 @@ private:
     std::atomic<u64> layer_read_trap_hits{0}, layer_read_trap_bytes{0};
     static bool LayerReadTrapsOn();
     void LayerArmReadTraps(VAddr address, u64 size);
-    void LayerCopyBackForCpu(VAddr address);
+    /// `may_record`: the scheduler may be flushed and copies recorded (not on the recording
+    /// thread, which may be inside a render pass with its own commands half recorded).
+    void LayerCopyBackForCpu(VAddr address, bool may_record);
+    std::atomic<u64> layer_read_trap_stale{0}; ///< recording thread hits on unsubmitted GPU data
+    /// BB_LAYER_PROBE=1 (diagnostics): which CPU code touches blocks the GPU writes in place for
+    /// the CPU's sake (layer_cpu_blocks), and how soon. Nothing moves; see LayerArmProbe.
+    static bool LayerProbeOn();
+    void LayerArmProbe(VAddr address, u64 size);
+    void LayerPrintProbe();
+    /// BB_LAYER_VERIFY=1 (diagnostics): a VRAM copy read while the game's bytes changed and no
+    /// trap or announced write said so (a stale copy) is reported with what is known of the block.
+    static bool LayerVerifyOn();
+    void LayerVerifyMirror(VAddr address, u64 size, bool is_texel_buffer);
+    void LayerVerifyForget(u64 first, u64 end);
     u64 layer_watch_refreshes = 0;        ///< statistics: watched blocks uploaded again
     /// Statistics: trap hits announced; by the game's code on watched / other blocks; by other
     /// code on watched / other blocks.
@@ -557,6 +597,7 @@ private:
     /// bbport BB_GUEST_IN_PLACE: blocks bound to the game's own memory, and guest unmaps to apply.
     TrackedIntervalList<> in_place_blocks;
     std::mutex pending_unmaps_mutex;
+    std::atomic<u64> unmaps_queued{0}; ///< every UnmapInPlace (LayerInPlace's memo)
     std::vector<std::pair<VAddr, u64>> pending_unmaps;
     std::atomic<bool> unmaps_pending{false};
     std::mutex dynamic_mutex;

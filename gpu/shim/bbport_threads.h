@@ -39,4 +39,8 @@ inline void MakeBackground() {
 }
 #endif
 
+/// bbport: the Vulkan recording threads: the submissions go out from there (ordered tasks), so
+/// they must never wait for the GPU command thread (a read trap's copy back, for one).
+inline thread_local bool gpu_side_helper = false;
+
 } // namespace BbThreads

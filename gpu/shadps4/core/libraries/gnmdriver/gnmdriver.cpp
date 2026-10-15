@@ -25,6 +25,7 @@
 #include "video_core/amdgpu/liverpool.h"
 #include "bbport_toggles.h"
 #include "bbport_timeline.h"
+#include "bbport_game_menu.h"
 #include "bbport_heap_sites.h"
 #include "bbport_gnm_hooks.h"
 #include "video_core/amdgpu/pm4_cmds.h"
@@ -158,8 +159,14 @@ static u32 SubmitsAhead() {
 // FPS with the PC memory model). Now the lowest count of each minute is kept, and the overlap ends
 // when it grew by more than LeakPerMinute two minutes in a row (the leak: ~108000 a minute); a
 // load raises it once. The heap asking for more memory (mmap) still ends it at once.
+// Two loads in a row (the save at the start, then a warp; 258599 -> 338844 -> 389475) still
+// tripped it, so a minute with a loading or title screen in it (the in-game step not running) is
+// not compared with the others: a leak needs three minutes in the world without a load.
+// Each minute in the world the lowest count is logged, also after the overlap ended: does the
+// heap keep growing without it (the game's own growth, the watchdog wrong) or not (a leak)?
 static void WatchOverlapLeak() {
-    if (SubmitsAhead() == 0) {
+    static const u32 configured_ahead = SubmitsAhead();
+    if (configured_ahead == 0) {
         return;
     }
     if (!BbHeapSites::Counting()) {
@@ -172,19 +179,32 @@ static void WatchOverlapLeak() {
     static long long previous[2] = {-1, -1}; // lowest of the minute before last, and of the last
     const long long live = BbHeapSites::LiveAllocations();
     minute_lowest = std::min(minute_lowest, live);
+    // Without the in-game step hook (StepAgeMs -1: another game version) every minute counts.
+    static bool minute_had_load = false;
+    if (BbGameMenu::StepAgeMs() >= 0 && !BbGameMenu::InPlay()) {
+        minute_had_load = true;
+    }
     bool leak = runtime_heap_growths() != 0;
     if (const auto now = std::chrono::steady_clock::now();
         now - minute_start >= std::chrono::minutes(1)) {
         minute_start = now;
-        if (previous[0] >= 0 && previous[1] - previous[0] > LeakPerMinute &&
-            minute_lowest - previous[1] > LeakPerMinute) {
-            leak = true;
+        std::printf("Gnm: heap: lowest live allocations of the minute %lld%s, frames overlap %s\n",
+                    minute_lowest, minute_had_load ? " (with a load)" : "",
+                    overlap_off ? "off" : "on");
+        if (minute_had_load) {
+            previous[0] = previous[1] = -1;
+        } else {
+            if (previous[0] >= 0 && previous[1] - previous[0] > LeakPerMinute &&
+                minute_lowest - previous[1] > LeakPerMinute) {
+                leak = true;
+            }
+            previous[0] = previous[1];
+            previous[1] = minute_lowest;
         }
-        previous[0] = previous[1];
-        previous[1] = minute_lowest;
+        minute_had_load = false;
         minute_lowest = LLONG_MAX;
     }
-    if (leak) {
+    if (leak && !overlap_off) {
         overlap_off = true;
         std::printf("Gnm: the game's heap grows (live allocations %lld, lowest of the last minutes "
                     "%lld, %lld; heap growths %llu): frames no longer overlap (BB_SUBMIT_AHEAD 0)\n",

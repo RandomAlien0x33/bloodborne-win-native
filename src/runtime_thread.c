@@ -97,8 +97,33 @@ static void attach(GuestThread *t) {
     set_gs(tcb);
     current=t;
 }
+/* A thread's record is its ScePthread handle, and the game packs handles into 40-bit fields: the
+ * owner of Bloodborne's hybrid lock (guest 0x20368c0) is masked to 0xffffffffff and then compared
+ * with the whole handle, so a handle above 40 bits never matches its own lock and the thread sleeps
+ * on its semaphore forever (deadinside28's 0.6: lamp travel hung at loading, issue/PR #193). The
+ * host heap is low on Windows too (no ASLR), but not by contract. Records come from low memory
+ * (below 40 bits, zeroed), carved out of 256 KiB pieces; they are never freed. */
+static GuestThread *low_record(void) {
+    static HostMutex pool_lock=HOST_MUTEX_INIT;
+    static unsigned char *pool;
+    static size_t left;
+    const size_t size=(sizeof(GuestThread)+63)&~(size_t)63, piece=256*1024;
+    void *record=NULL;
+    host_lock(&pool_lock);
+    if (left<size) {
+        pool=runtime_low_map(piece,PROT_READ|PROT_WRITE);
+        left=pool ? piece : 0;
+    }
+    if (left>=size) { record=pool; pool+=size; left-=size; }
+    host_unlock(&pool_lock);
+    return record;
+}
 static GuestThread *new_thread(void) {
-    GuestThread *t=calloc(1,sizeof(*t));
+    GuestThread *t=low_record();
+    if (!t) {
+        fputs("Runtime: no low memory for a thread record; its handle may not fit 40 bits\n",stderr);
+        t=calloc(1,sizeof(*t));
+    }
     if (!t) return NULL;
     t->attr=(ThreadAttr){.magic=ATTR_MAGIC,.policy=1,.prio=DEFAULT_PRIO,.stack=DEFAULT_STACK,.affinity=0x7f};
     return t;

@@ -230,6 +230,20 @@ switched off (`bbport.ini`).
 > of Insight changes the world: enemies, sounds, frenzy), item counts. Save a copy (**F5**) before
 > turning cheats on: loading it brings everything back.
 
+## Logs
+
+Each start writes its log to `out\last-run.log` (the one before it: `out\prev-run.log`). Three
+launchers differ only in how much goes there:
+
+| Launcher | Log |
+|---|---|
+| `Bloodborne.cmd` | Short: startup, problems, the port's events. On a crash the last routine lines are added. |
+| `Bloodborne-log.cmd` | Everything the game and the port print. |
+| `Bloodborne-fulllog.cmd` | Everything plus frame, GPU and memory statistics (a little slower). |
+
+When reporting a problem, attach `out\last-run.log`; if asked, start the game with the launcher
+named and repeat what led to it.
+
 ## Building from source
 
 **Setup program:** `setup.bat` installs MSYS2 and the packages, gets the sources and builds the

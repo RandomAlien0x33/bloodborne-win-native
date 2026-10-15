@@ -325,6 +325,10 @@ struct PageManager::Impl {
         if (BbLayer::WriteTraps::Reasons(addr) & BbLayer::WriteTraps::VramData) {
             return rasterizer->OnVramDataAccess(addr, is_gpu_thread);
         }
+        if (BbLayer::WriteTraps::Reasons(addr) & BbLayer::WriteTraps::Probe) {
+            return rasterizer->OnProbeAccess(addr, reinterpret_cast<u64>(Common::GetRip(context)),
+                                             Common::IsWriteError(context), is_gpu_thread);
+        }
         if (BbLayer::WriteTraps::Reasons(addr) & BbLayer::WriteTraps::QueryReads) {
             return rasterizer->OnOcclusionPageAccess(
                 addr, reinterpret_cast<u64>(Common::GetRip(context)),

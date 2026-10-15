@@ -33,6 +33,7 @@
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
+#include "bbport_copy.h"
 #include "bbport_threads.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -238,19 +239,23 @@ bool Rasterizer::WriteDataOnGpu(VAddr address, const void* data, u32 size) {
 }
 
 bool Rasterizer::OcclusionTranslated() {
-    // BB_OCCLUSION_QUERIES=1 (opt-in): Vulkan occlusion queries. Else the counters stay the fixed
-    // sequence written when decoded (everything visible, as in the 0.3 model). With an upscaler
-    // the scene is drawn smaller and jittered: a light's sub-pixel test shape passed samples in
-    // one frame and none in the next, and its glow flashed grey over the whole frame (a lamp in
-    // the cathedral at 640x360). Counting has to become stable against that first.
-    // The PM4 self-test (BB_PM4_SELFTEST=1) checks them, so it turns them on.
+    // Vulkan occlusion queries. A pass drawn at another size than the game's target (the reduced
+    // scene with an upscaler, the output-size UI) has its samples scaled to the game's resolution
+    // (OcclusionQueries::SetPassScale, deadinside28's 0.6): the game read 1/4 or 1/9 of the PS4's
+    // counts before, and a lamp's glow flashed grey over the whole frame. On by default with the
+    // memory module (Experimental 1, as deadinside28's new model); BB_OCCLUSION_QUERIES=1: with
+    // the other models with the game's memory in place too, =0: the fixed sequence written when
+    // decoded (everything visible, as in the 0.3 model). The PM4 self-test (BB_PM4_SELFTEST=1)
+    // checks them, so it turns them on.
     static const bool enabled = [] {
         const char* env = std::getenv("BB_OCCLUSION_QUERIES");
         const char* selftest = std::getenv("BB_PM4_SELFTEST");
-        return (env && env[0] == '1') || (selftest && selftest[0] == '1');
+        if ((env && env[0] == '1') || (selftest && selftest[0] == '1')) {
+            return true;
+        }
+        return !(env && env[0] == '0') && BbGuestMemory::LayerMemory();
     }();
-    // Experiment bit 4 of BB_TOGGLE_FILE: the fixed sequence while the game runs (A/B).
-    return enabled && VideoCore::GuestInPlace() && !BbToggle::Experiment(4);
+    return enabled && VideoCore::GuestInPlace();
 }
 
 bool Rasterizer::OcclusionEvent(VAddr address, u32 pairs) {
@@ -272,11 +277,40 @@ bool Rasterizer::OnOcclusionPageAccess(VAddr addr, u64 rip, bool write, bool gpu
     return occlusion && occlusion->OnAccess(addr, rip, write, gpu_thread);
 }
 
-bool Rasterizer::OnVramDataAccess(VAddr addr, bool assume_locks) {
-    if (!assume_locks) {
-        DrainDrawPipe(); // as ReadMemory: the recording thread idle while the copy back runs
+bool Rasterizer::OnVramDataAccess(VAddr addr, bool gpu_thread) {
+    // bbport (deadinside28's 0.6): who reads the GPU's data there decides how it is copied back.
+    using Caller = VideoCore::BufferCache::TrapCaller;
+    static std::atomic<u32> told{0};
+    if (told.fetch_add(1, std::memory_order_relaxed) < 16) {
+        std::printf("Layer read trap: %#llx read by the %s\n", (unsigned long long)addr,
+                    gpu_thread ? (OnStageA() ? "GPU command thread" : "recording thread")
+                    : runtime_fault_recover ? "speculative reader"
+                    : BbCopy::OnCopyThread() || BbThreads::gpu_side_helper ? "GPU-side helper"
+                                                                           : "guest or another thread");
     }
-    return buffer_cache.LayerReadTrapHit(addr, assume_locks);
+    if (!gpu_thread) {
+        if (runtime_fault_recover) {
+            // A speculative reader (draw preparation) gives up at its recovery point; the draw
+            // is prepared by the GPU command thread. It must not wait for that thread.
+            return false;
+        }
+        if (BbCopy::OnCopyThread() || BbThreads::gpu_side_helper) {
+            // The submissions wait for the copy threads: never wait for the command thread here
+            // (as the recording thread: submitted GPU data is waited for, unsubmitted read as is).
+            return buffer_cache.LayerReadTrapHit(addr, Caller::RecordingThread);
+        }
+        return buffer_cache.LayerReadTrapHit(addr, Caller::Guest);
+    }
+    if (OnStageA()) {
+        // The copy back may flush the scheduler and record copies: the recording thread idle.
+        DrainDrawPipe();
+        return buffer_cache.LayerReadTrapHit(addr, Caller::CommandThread);
+    }
+    return buffer_cache.LayerReadTrapHit(addr, Caller::RecordingThread);
+}
+
+bool Rasterizer::OnProbeAccess(VAddr addr, u64 rip, bool write, bool gpu_thread) {
+    return buffer_cache.LayerProbeHit(addr, rip, write, gpu_thread);
 }
 
 bool Rasterizer::WriteTimestampOnGpu(VAddr address, bool end_of_pipe) {
@@ -1798,6 +1832,9 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
+    if (occlusion) {
+        occlusion->SetPassScale(target_scale[0] * target_scale[1]); // samples at the game's size
+    }
     scheduler.BeginRendering(state);
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
@@ -1935,6 +1972,9 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     }
     UpdateDynamicState(pipeline, is_indexed);
     MarkPass(pipeline, state);
+    if (occlusion) {
+        occlusion->SetPassScale(target_scale[0] * target_scale[1]); // samples at the game's size
+    }
     scheduler.BeginRendering(state);
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)

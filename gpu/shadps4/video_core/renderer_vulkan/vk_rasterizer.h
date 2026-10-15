@@ -226,7 +226,9 @@ public:
     bool OnOcclusionPageAccess(VAddr addr, u64 rip, bool write, bool gpu_thread);
     /// A CPU access hit a page whose newest data the GPU wrote into a VRAM copy only
     /// (BB_LAYER_READ_TRAPS): copied back first. False: not such a page.
-    bool OnVramDataAccess(VAddr addr, bool assume_locks);
+    bool OnVramDataAccess(VAddr addr, bool gpu_thread);
+    /// BB_LAYER_PROBE (diagnostics): a CPU access to a probed block (BufferCache::LayerProbeHit).
+    bool OnProbeAccess(VAddr addr, u64 rip, bool write, bool gpu_thread);
     /// End of a guest submission: submits the work recorded so far when signals wait for it and
     /// the last submission is BB_HONEST_FLUSH_US (1000) old: the GPU starts on it as the hardware
     /// would, instead of at the end of the frame, and the guest's mid-frame waits end sooner.

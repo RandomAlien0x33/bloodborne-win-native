@@ -219,6 +219,9 @@ inline std::atomic<std::uint32_t> coarse_second{0};
 /// VRAM blocks moved back in place when idle, unbound with the memory the game unmapped, and
 /// residency chunks given back to the driver.
 inline std::atomic<std::uint64_t> vram_idle_bytes{0}, vram_unmapped_bytes{0}, vram_chunks_freed_bytes{0};
+/// bbport BB_LAYER_MEMORY: GPU writes kept in place because the CPU once wrote their blocks, and
+/// dynamic blocks the loaders wrote whole again (back to copies).
+inline std::atomic<std::uint64_t> gpu_writes_kept_by_cpu_bytes{0}, dynamic_reloaded_bytes{0};
 /// Residency chunks, chunks sent away (ProcessIdleBlocks), and their blocks that had to stay.
 inline std::atomic<std::uint64_t> residency_chunk_count{0}, evacuations{0}, evac_kept_gpu{0}, evac_kept_other{0};
 /// Images the collector passed over (GPU-written, not evictable without memory pressure).

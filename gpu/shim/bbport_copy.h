@@ -14,6 +14,9 @@ void ParallelFor(std::size_t count, const std::function<void(std::size_t)>& task
 /// True when ParallelFor would split work (more than one thread available).
 bool Enabled();
 
+/// True on a copy thread (or a caller running its share of a ParallelFor).
+bool OnCopyThread();
+
 /// Starts `task` on a copy thread now (inline when the pool is disabled). Tasks run in any
 /// order and concurrently.
 void Async(std::function<void()> task);

@@ -615,6 +615,37 @@ bool HookCopyCall(u8* image, const CallSite& call) {
     return WriteJump(site, 0xe8, PlaceStub(e, 0));
 }
 
+/// The GX swap-chain's per-frame render command (deadinside28's 0.6, #162 #192): its 16-byte node
+/// comes from a per-frame bump allocator that returns null once the frame's heap is used up; the
+/// game writes through it unchecked (`mov [r12 + 8], r13` at 0x2199310, then posts it to the
+/// render thread): a guest fault at address 8. Without a node the post is skipped and the pending
+/// flag (this + 0x3ab) stays set, so the command goes out with the next frame.
+constexpr u64 GxNodeSite = 0x2199310;
+constexpr u64 GxNodeSkip = 0x219934e; // past the post and the flag's clear
+bool GuardGxNode(u8* image) {
+    u8* site = image + GxNodeSite;
+    static constexpr u8 Code[9] = {0x4d, 0x89, 0x6c, 0x24, 0x08,  // mov [r12 + 8], r13
+                                   0x49, 0x8b, 0x87, 0xb0};       // mov rax, [r15 + 0xb0]
+    if (std::memcmp(site, Code, sizeof(Code)) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.Bytes({0x4d, 0x85, 0xe4});             // test r12, r12
+    e.Bytes({0x74, 0x0a});                   // jz null (past the next 10 bytes)
+    e.Bytes({0x4d, 0x89, 0x6c, 0x24, 0x08}); // mov [r12 + 8], r13
+    const std::size_t jmp_back = e.size;
+    e.Bytes({0xe9, 0x00, 0x00, 0x00, 0x00}); // jmp back to the next instruction (below)
+    e.Bytes({0xff, 0x25, 0x00, 0x00, 0x00, 0x00}); // null: jmp [rip], past the post
+    e.U64(reinterpret_cast<u64>(image + GxNodeSkip));
+    const u64 stub = PlaceStub(e, 0);
+    std::uint32_t rel = 0;
+    if (!stub || !Rel32To(stub + jmp_back + 5, reinterpret_cast<u64>(site) + 5, rel)) {
+        return false;
+    }
+    std::memcpy(reinterpret_cast<u8*>(stub) + jmp_back + 1, &rel, 4);
+    return WriteJump(site, 0xe9, stub);
+}
+
 bool Wanted() {
     // Only with the game's memory in place (the launcher sets BB_GUEST_IN_PLACE from the memory
     // model before the game starts); BB_GUEST_HOOKS=0 leaves the game's code alone.
@@ -625,7 +656,10 @@ bool Wanted() {
 } // namespace
 
 void PatchImage(unsigned char* image, std::uint64_t) {
-    if (!Wanted()) {
+    const bool memory_hooks = Wanted();
+    const char* gx_env = std::getenv("BB_GX_NODE_GUARD");
+    const bool gx_guard = !(gx_env && gx_env[0] == '0');
+    if (!memory_hooks && !gx_guard) {
         return;
     }
     auto* p = static_cast<u8*>(runtime_low_map(StubPageSize, 3));
@@ -636,23 +670,33 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     }
     stub_page = p;
     int copies = 0, heap = 0;
-    for (const auto& call : MemcpySites) {
-        copies += HookCopyCall(image, call);
-    }
-    const bool allocator = HookAllocReturn(image);
-    const char* heap_env = std::getenv("BB_HEAP_HOOKS");
-    if (!heap_env || heap_env[0] != '0') {
-        for (const u64 site : HeapAllocReturns) {
-            heap += HookHeapReturn(image, site);
+    bool allocator = false;
+    if (memory_hooks) {
+        for (const auto& call : MemcpySites) {
+            copies += HookCopyCall(image, call);
+        }
+        allocator = HookAllocReturn(image);
+        const char* heap_env = std::getenv("BB_HEAP_HOOKS");
+        if (!heap_env || heap_env[0] != '0') {
+            for (const u64 site : HeapAllocReturns) {
+                heap += HookHeapReturn(image, site);
+            }
         }
     }
+    const bool gx_in = gx_guard && GuardGxNode(image);
     DWORD old = 0;
     VirtualProtect(stub_page, StubPageSize, PAGE_EXECUTE_READ, &old);
     FlushInstructionCache(GetCurrentProcess(), stub_page, StubPageSize);
-    std::printf("Guest hooks: %d of %zu resource copy sites tell the GPU side of their writes; "
-                "GPU heap allocations seen at %d of %zu call sites; GPU memory allocator %s\n",
-                copies, MemcpySites.size(), heap, HeapAllocReturns.size(),
-                allocator ? "hooked" : "not found");
+    if (memory_hooks) {
+        std::printf("Guest hooks: %d of %zu resource copy sites tell the GPU side of their writes; "
+                    "GPU heap allocations seen at %d of %zu call sites; GPU memory allocator %s\n",
+                    copies, MemcpySites.size(), heap, HeapAllocReturns.size(),
+                    allocator ? "hooked" : "not found");
+    }
+    if (gx_guard) {
+        std::printf("Guest hooks: GX command node guard %s (BB_GX_NODE_GUARD=0: off)\n",
+                    gx_in ? "in" : "not installed (other code there)");
+    }
 }
 
 void Install(RangeCallback on_gpu_range_allocated) {

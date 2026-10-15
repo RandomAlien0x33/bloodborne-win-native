@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 
@@ -22,6 +23,14 @@
 #include "video_core/buffer_cache/region_definitions.h"
 #include "video_core/page_manager.h"
 
+namespace BbMem {
+/// bbport (deadinside28's 0.6): counts every change that marks pages CPU-modified anywhere
+/// (bumped before the bits are set, as a guest write's fault comes before its store): a reading
+/// binding found settled at one value needs no upload check while it holds (BufferCache's
+/// binding memo, BB_LAYER_MEMORY).
+inline std::atomic<u64> cpu_change_epoch{0};
+} // namespace BbMem
+
 namespace VideoCore {
 
 #ifdef PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP
@@ -38,6 +47,7 @@ class RegionManager {
 public:
     explicit RegionManager(PageManager* tracker_, VAddr cpu_addr_)
         : tracker{tracker_}, cpu_addr{cpu_addr_} {
+        BbMem::cpu_change_epoch.fetch_add(1, std::memory_order_acq_rel);
         cpu.Fill();
         gpu.Clear();
         writeable.Fill();
@@ -94,6 +104,7 @@ public:
 
         RegionBits& bits = GetRegionBits<type>();
         if constexpr (type == Type::CPU && enable) {
+            BbMem::cpu_change_epoch.fetch_add(1, std::memory_order_acq_rel);
             CountWriteFaults(start_page, end_page);
             last_cpu_write_frame = BbStats::frame_number.load(std::memory_order_relaxed);
             NotePreuploadChurn();
@@ -124,6 +135,7 @@ public:
         if (add.None()) {
             return;
         }
+        BbMem::cpu_change_epoch.fetch_add(1, std::memory_order_acq_rel);
         cpu |= add;
         UpdateProtection<false, false>();
     }
@@ -314,6 +326,7 @@ private:
             num_hot = 0;
             return;
         }
+        BbMem::cpu_change_epoch.fetch_add(1, std::memory_order_acq_rel);
         cpu |= RegionBits(hot, start_page, end_page);
     }
 

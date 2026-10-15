@@ -329,7 +329,44 @@ void TileManager::TileImage(Image& in_image, std::span<vk::BufferImageCopy> buff
         .offset = staging.offset,
         .range = info.guest_size,
     };
-    const auto dim_x = static_cast<u32>((info.guest_size / (info.num_bits / 8)) / 64);
+    const u64 texels = info.guest_size / (info.num_bits / 8);
+    const auto dim_x = static_cast<u32>(texels / 64);
+    // bbport (deadinside28's PR #210 by whp199): the tiler writes a texel at a time at swizzled
+    // addresses. Into host memory (the game's memory in place, BB_LAYER_MEMORY: Experimental 1)
+    // each of those writes crossed the bus on its own: ~4.8 ms for a 1280x720 RGBA8 target a
+    // compute shader reads as a texel buffer, four times a frame (RTX 5090: 36 -> 117 FPS with
+    // the fix). Tiled into VRAM and copied over in one transfer instead. Only where the tiler
+    // writes every byte of the copy: all levels back to back over guest_size and whole
+    // workgroups (else bytes it leaves alone would be overwritten). BB_TILE_VIA_VRAM=0: off.
+    static const bool via_vram = [] {
+        const char* env = std::getenv("BB_TILE_VIA_VRAM");
+        return !(env && env[0] == '0');
+    }();
+    const bool host_destination = out_buffer->mem_type == MemoryType::HostCached ||
+                                  out_buffer->mem_type == MemoryType::HostUncached;
+    u64 covered = 0;
+    for (u32 mip = 0; mip < params.num_mips; ++mip) {
+        const auto& layout = info.mips_layout[mip];
+        covered = layout.offset == covered ? covered + layout.size : ~0ULL;
+    }
+    if (via_vram && host_destination && covered == info.guest_size && texels % 64 == 0) {
+        const auto tiled =
+            runtime.GetStagingPool().Request(info.guest_size, MemoryType::DeviceLocal);
+        const vk::DescriptorBufferInfo vram_buffer_info{
+            .buffer = tiled.buffer->Handle(),
+            .offset = tiled.offset,
+            .range = info.guest_size,
+        };
+        RecordTilingDispatch(GetTilingPipeline(info, true), vram_buffer_info, linear_buffer_info,
+                             params_buffer_info, dim_x);
+        runtime.AccessBuffer(tiled.buffer, tiled.offset, info.guest_size,
+                             vk::PipelineStageFlagBits2::eComputeShader,
+                             vk::AccessFlagBits2::eShaderWrite);
+        const vk::BufferCopy copy{
+            .srcOffset = tiled.offset, .dstOffset = out_offset, .size = info.guest_size};
+        runtime.CopyBuffer(tiled.buffer, out_buffer, {&copy, 1});
+        return;
+    }
     // bbport: recorded with copies of the descriptor infos (threaded recording).
     RecordTilingDispatch(GetTilingPipeline(info, true), tiled_buffer_info, linear_buffer_info,
                          params_buffer_info, dim_x);

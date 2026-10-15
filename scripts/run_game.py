@@ -18,6 +18,7 @@ BB_DRY_RUN=1    every step but the last: prints the bb-probe command and its env
                 instead of starting the game.
 The other variables are described where they are read below.
 """
+import collections
 import glob
 import os
 from pathlib import Path
@@ -227,33 +228,102 @@ def ignore_interrupts():
 # BB_SAVE_LOG=1: the file this run's output is also written to (set in main()).
 SAVE_LOG = None
 
+# BB_LOG (Windows; Bloodborne.cmd quiet, Bloodborne-log.cmd normal, Bloodborne-fulllog.cmd full):
+# how much of bb-probe's output is shown and logged.
+#   quiet   startup, problems and the port's own events. Routine lines (memory, guest threads,
+#           save mounts, texture cache, ...) are held back; the last ROUTINE_KEPT of them come out
+#           before a problem line and when the game ends abnormally.
+#   normal  everything; the running count of blocks moved to VRAM once per 256 MiB.
+#   full    (or unset) everything.
+LOG_LEVEL = None
+ROUTINE = re.compile(r"Guest memory: |Runtime: save data '.*' mounted at |Camera motion: |"
+                     r"Runtime: semaphore id=|Runtime: guest thread '|Texture cache: memory pressure|"
+                     r'GPU: \d+ pipelines compiled in the background|Runtime: open\(.*\) -> not found|'
+                     r'Runtime: mapped (direct|flexible) memory|Runtime: direct allocation|'
+                     r'== Stall during rendering|Sampler: game uses')
+# Not "fault" alone: the statistics count page faults ("fault handlers: 0 read faults").
+PROBLEM = re.compile(r'(Host|Guest|GPU) fault|STOP:|[Ww]atchdog|[Dd]evice lost|<Error>|<Critical>|'
+                     r'[Ee]xception|[Aa]ssert|Unreachable:|[Cc]rash|[Ff]ailed')
+VRAM_COUNT = re.compile(r'Guest memory: (\d+) MiB of loaded blocks moved from in place to VRAM')
+ROUTINE_KEPT = 300
+
+
+class OutputFilter:
+    """BB_LOG quiet/normal: decides line by line what is written."""
+
+    def __init__(self, level):
+        self.level = level
+        self.held = collections.deque(maxlen=ROUTINE_KEPT)
+        self.vram_step = -1
+
+    def lines(self, raw, text):
+        """The raw lines to write for one line of output."""
+        if self.level == 'normal':
+            moved = VRAM_COUNT.match(text)
+            if moved:
+                step = int(moved.group(1)) >> 8
+                if step == self.vram_step:
+                    return []
+                self.vram_step = step
+            return [raw]
+        if ROUTINE.match(text):
+            self.held.append(raw)
+            return []
+        if PROBLEM.search(text):
+            return self.release() + [raw]
+        return [raw]
+
+    def release(self):
+        if not self.held:
+            return []
+        out = [f'--- the last {len(self.held)} routine lines (BB_LOG=quiet held them back) ---\n'.encode()]
+        out += self.held
+        out.append(b'--- end of the routine lines ---\n')
+        self.held.clear()
+        return out
+
 
 def start_logged(command):
-    """Runs bb-probe with its output copied into SAVE_LOG as well (BB_SAVE_LOG=1)."""
+    """Runs bb-probe with its output filtered (BB_LOG) and copied into SAVE_LOG (BB_SAVE_LOG=1)."""
     print('Starting:', quoted(command), flush=True)
-    with open(SAVE_LOG, 'w', encoding='utf-8', errors='replace') as log:
+    log = open(SAVE_LOG, 'wb') if SAVE_LOG else None
+    output = OutputFilter(LOG_LEVEL) if LOG_LEVEL else None
+    try:
         try:
             child = subprocess.Popen([str(c) for c in command], stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         except OSError as error:
             print(f'{command[0]}: {error.strerror}', file=sys.stderr)
             return 127
+
+        def write(chunks):
+            for chunk in chunks:
+                sys.stdout.buffer.write(chunk)
+                if log:
+                    log.write(chunk)
+            sys.stdout.buffer.flush()
+            if log:
+                log.flush()
+
         try:
             for raw in iter(child.stdout.readline, b''):
-                line = raw.decode('utf-8', errors='replace')
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                log.write(line)
-                log.flush()
+                text = raw.decode('utf-8', errors='replace')
+                write(output.lines(raw, text) if output else [raw])
         except KeyboardInterrupt:
             child.terminate()
-        return exit_status(child.wait())
+        status = exit_status(child.wait())
+        if output and status != 0:
+            write(output.release())
+        return status
+    finally:
+        if log:
+            log.close()
 
 
 def start(command, probe, overlay):
     """Runs bb-probe and returns its status; on Linux without a mod view it replaces this
     process (the GTK launcher's process, and probe.c's restart execs run.sh in place)."""
-    if SAVE_LOG:
+    if SAVE_LOG or LOG_LEVEL:
         return start_logged(command)
     if WINDOWS:
         print('Starting:', quoted(command), flush=True)
@@ -479,6 +549,9 @@ def main():
             os.environ['BB_READBACK_LOG'] = env('BB_READBACK_LOG', os.path.join(logs, f'{stamp}.readbacks.csv'))
             SAVE_LOG = os.path.join(logs, f'{stamp}.log')
             print(f'Log: {SAVE_LOG}')
+        if WINDOWS and env('BB_LOG') in ('quiet', 'normal'):
+            global LOG_LEVEL
+            LOG_LEVEL = env('BB_LOG')
         if os.environ.get('BB_DRY_RUN') == '1':
             describe_dry_run(command, probe)
             return 0

@@ -189,6 +189,9 @@ private:
     /// of its own): one more RCAS pass over the target (output_image, or the 8-bit UI image with
     /// ldr) in General layout after the upscaler.
     void ExtraSharpen(vk::Image target, bool ldr, u32 w, u32 h);
+    /// The sharpened DLSS / FSR 4 output written into the UI image in one pass; false: not
+    /// done (no extra sharpening, another UI format), copy it as before.
+    bool SharpenIntoUi(u32 w, u32 h);
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -294,6 +297,8 @@ private:
     vk::UniquePipelineLayout taa_sharpen_pipeline_layout;
     vk::UniquePipeline taa_sharpen_pipeline;
     vk::UniquePipeline taa_sharpen_ldr_pipeline;
+    vk::UniquePipeline taa_sharpen_fused_pipeline;      // DLSS / FSR 4 output -> UI image
+    vk::UniquePipeline taa_sharpen_fused_srgb_pipeline; // the same, sRGB UI image
     // bbport: FSR 4 in linear light on the scaled presets (fsr4_color.comp): the decoded input
     // and the passes that decode it and encode the output again.
     VideoCore::UniqueImage fsr4_linear_image;

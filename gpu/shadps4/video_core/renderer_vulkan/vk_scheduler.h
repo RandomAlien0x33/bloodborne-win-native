@@ -986,6 +986,11 @@ public:
     }
 
     /// Returns the scheduler timeline semaphore.
+    /// bbport: the submission signalling `tick` is in the queue already (no wait).
+    [[nodiscard]] bool IsSubmitted(u64 tick) const noexcept {
+        return submitted_tick.load(std::memory_order_acquire) >= tick;
+    }
+
     [[nodiscard]] Semaphore* GetWorkSemaphore() noexcept {
         return &work_semaphore;
     }
