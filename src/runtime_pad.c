@@ -283,17 +283,18 @@ static void report_guest_heap(void) {
  * (right). Gamepad names as SDL's: a b x y back start leftstick rightstick leftshoulder
  * rightshoulder dpup dpdown dpleft dpright touchpad misc1 paddle1-4, plus lefttrigger and
  * righttrigger. The keyboard works next to a gamepad (the Steam Deck always has one): its buttons
- * add to the gamepad's, a held move/look key moves the stick all the way. */
+ * add to the gamepad's, a held move/look key moves the stick all the way. move_slow (keyboard
+ * only, Left Ctrl by default; Left Alt frees the mouse): while held, the left stick is tilted half as far: the hunter walks. */
 enum {
     IN_CROSS, IN_CIRCLE, IN_SQUARE, IN_TRIANGLE, IN_L1, IN_R1, IN_L2, IN_R2, IN_L3, IN_R3,
     IN_OPTIONS, IN_TOUCHPAD, IN_TOUCHPAD_RIGHT, IN_UP, IN_DOWN, IN_LEFT, IN_RIGHT,
     IN_MOVE_UP, IN_MOVE_DOWN, IN_MOVE_LEFT, IN_MOVE_RIGHT, IN_LOOK_UP, IN_LOOK_DOWN, IN_LOOK_LEFT,
-    IN_LOOK_RIGHT, IN_COUNT
+    IN_LOOK_RIGHT, IN_MOVE_SLOW, IN_COUNT
 };
 static const char *const input_names[IN_COUNT]={
     "cross","circle","square","triangle","l1","r1","l2","r2","l3","r3","options","touchpad",
     "touchpad_right","up","down","left","right","move_up","move_down","move_left","move_right",
-    "look_up","look_down","look_left","look_right",
+    "look_up","look_down","look_left","look_right","move_slow",
 };
 static const uint32_t input_buttons[IN_COUNT]={
     BTN_CROSS,BTN_CIRCLE,BTN_SQUARE,BTN_TRIANGLE,BTN_L1,BTN_R1,BTN_L2,BTN_R2,BTN_L3,BTN_R3,
@@ -318,6 +319,7 @@ static void bind_defaults(void) {
         {IN_MOVE_UP,SDL_SCANCODE_W}, {IN_MOVE_DOWN,SDL_SCANCODE_S}, {IN_MOVE_LEFT,SDL_SCANCODE_A},
         {IN_MOVE_RIGHT,SDL_SCANCODE_D}, {IN_LOOK_UP,SDL_SCANCODE_UP}, {IN_LOOK_DOWN,SDL_SCANCODE_DOWN},
         {IN_LOOK_LEFT,SDL_SCANCODE_LEFT}, {IN_LOOK_RIGHT,SDL_SCANCODE_RIGHT},
+        {IN_MOVE_SLOW,SDL_SCANCODE_LCTRL},
     };
     static const struct { int input, button; } pads[]={
         {IN_CROSS,SDL_GAMEPAD_BUTTON_SOUTH}, {IN_CIRCLE,SDL_GAMEPAD_BUTTON_EAST},
@@ -437,6 +439,11 @@ static void apply_keyboard(PadData *d, const bool *k) {
     if (key_down(k,IN_R2)) d->r2=255;
     d->left_x=key_axis(d->left_x,key_down(k,IN_MOVE_LEFT),key_down(k,IN_MOVE_RIGHT));
     d->left_y=key_axis(d->left_y,key_down(k,IN_MOVE_UP),key_down(k,IN_MOVE_DOWN));
+    if (key_down(k,IN_MOVE_SLOW)) {
+        /* Half the tilt, whatever moves the stick (keys or a gamepad): walking, not running. */
+        d->left_x=(uint8_t)(128+((int)d->left_x-128)/2);
+        d->left_y=(uint8_t)(128+((int)d->left_y-128)/2);
+    }
     d->right_x=key_axis(d->right_x,key_down(k,IN_LOOK_LEFT),key_down(k,IN_LOOK_RIGHT));
     d->right_y=key_axis(d->right_y,key_down(k,IN_LOOK_UP),key_down(k,IN_LOOK_DOWN));
 }

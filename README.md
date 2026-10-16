@@ -2,8 +2,10 @@
 
 # Bloodborne Windows Native
 
-### 🖱️ Mouse and keyboard · 💾 Save anywhere · DLSS · FSR 4 · up to 4K
+### 🛡️ Stable · 🖱️ Mouse and keyboard · 💾 Save anywhere · DLSS · FSR 4 · up to 4K
 
+- **Stability first:** developed with crash-free play in mind: long sessions without crashes,
+  also on graphics cards with 4 GB of memory. Every crash report is tracked down and fixed.
 - **Mouse and keyboard:** the mouse turns the camera directly, as in PC games; every key can be
   rebound.
 - **Save copies:** save your progress at any moment and load any copy back without restarting
@@ -25,8 +27,8 @@ Windows 10/11 · 116 MB · no game files included
 </p>
 
 > [!CAUTION]
-> **Graphics card with 4 GB of memory or less?** If the game crashes or the frame rate drops
-> sharply after a while of playing, try the other memory modes: in the game's menu
+> **Graphics card with 4 GB of memory or less, or low FPS?** If the game crashes, the frame rate
+> is low or drops sharply after a while of playing, try the other memory modes: in the game's menu
 > **System → Additional → Memory mode** (or the port's menu, Insert) choose **Hybrid**, and if
 > that does not help, **Experimental 1**. The game needs a restart after the change.
 
@@ -40,10 +42,10 @@ Windows 10/11 · 116 MB · no game files included
 
 **▶ Watch on YouTube: [new video](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [first video](https://www.youtube.com/watch?v=JUkWqngg8r4) · [playthrough on this port](https://www.youtube.com/watch?v=lZabKv_oRko)**
 
-A native Windows port of *Bloodborne* (PlayStation 4, version 1.09), based on
-**[bbport](https://github.com/deadinside28/bloodborne_pc)** by deadinside28.
+A Windows port of *Bloodborne* (PlayStation 4, version 1.09), based on the
+**[Linux port by deadinside28](https://github.com/deadinside28/bloodborne_pc)**.
 
-The game's original executable runs on the PC, a
+The game's original executable runs on a Windows PC, a
 runtime written for this game takes the place of the PS4 system libraries, and the graphics are
 translated to Vulkan.
 
@@ -155,6 +157,7 @@ Case does not matter. A line replaces all default keys and mouse buttons of that
 - `up`, `down`, `left`, `right`: d-pad (I, K, J, L)
 - `move_up`, `move_down`, `move_left`, `move_right`: walking (W, S, A, D)
 - `look_up`, `look_down`, `look_left`, `look_right`: camera (arrow keys)
+- `move_slow`: walk slowly while held (Left Ctrl); keyboard only. Left Alt is taken: held, it frees the mouse cursor
 
 **Mouse:** `mouse_left`, `mouse_right`, `mouse_middle` (wheel click), `mouse_x1` (side "back"),
 `mouse_x2` (side "forward"). The scroll wheel can't be bound.

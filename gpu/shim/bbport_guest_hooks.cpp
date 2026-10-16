@@ -646,6 +646,53 @@ bool GuardGxNode(u8* image) {
     return WriteJump(site, 0xe9, stub);
 }
 
+/// A render command node from the frame's linear heap (the object [0x55406c8] + 0x360 + 8 * its
+/// frame index, allocator at +0x78): 0x4d0 bytes, 0x398 of them copied from the request at once,
+/// unchecked. When the frame's heap is used up the allocator returns null and the copy writes at
+/// address 0 (ucrtbase memcpy +0xee4b3, write at 0x20: 2026-10-11 after 1 h 45 min, 2026-10-16 at
+/// an area load). The allocator's lock is released before the copy: a null node returns from
+/// the function (its own epilogue), the command is left out of that frame.
+constexpr u64 FrameNodeSite = 0x21d5b35;     // mov edx, 0x398 (the copy's size), after the unlock
+constexpr u64 FrameNodeEpilogue = 0x21d5aca; // add rsp, 8; pop rbx, r12-r15, rbp; ret
+std::atomic<std::uint32_t> frame_node_skips{0};
+GUEST_ABI void FrameNodeSkipped() {
+    const std::uint32_t n = frame_node_skips.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 20 || (n & (n - 1)) == 0) {
+        std::printf("Guest hooks: the frame's render command heap is full: a command left out "
+                    "(%u so far)\n", n);
+    }
+}
+bool GuardFrameNode(u8* image) {
+    u8* site = image + FrameNodeSite;
+    static constexpr u8 Code[11] = {0xba, 0x98, 0x03, 0x00, 0x00,  // mov edx, 0x398
+                                    0x4c, 0x89, 0xef,              // mov rdi, r13
+                                    0x48, 0x89, 0xde};             // mov rsi, rbx
+    static constexpr u8 Epilogue[15] = {0x48, 0x83, 0xc4, 0x08, 0x5b, 0x41, 0x5c, 0x41,
+                                        0x5d, 0x41, 0x5e, 0x41, 0x5f, 0x5d, 0xc3};
+    if (std::memcmp(site, Code, sizeof(Code)) != 0 ||
+        std::memcmp(image + FrameNodeEpilogue, Epilogue, sizeof(Epilogue)) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.Bytes({0x4d, 0x85, 0xed});             // test r13, r13
+    e.Bytes({0x74, 0x0a});                   // jz null (past the next 10 bytes)
+    e.Bytes({0xba, 0x98, 0x03, 0x00, 0x00}); // mov edx, 0x398
+    const std::size_t jmp_back = e.size;
+    e.Bytes({0xe9, 0x00, 0x00, 0x00, 0x00}); // jmp back to the next instruction (below)
+    e.SaveVolatile();                        // null: counted and logged
+    e.CallAbs(reinterpret_cast<const void*>(&FrameNodeSkipped));
+    e.RestoreVolatile();
+    e.Bytes({0xff, 0x25, 0x00, 0x00, 0x00, 0x00}); // jmp [rip]: the function's epilogue
+    e.U64(reinterpret_cast<u64>(image + FrameNodeEpilogue));
+    const u64 stub = PlaceStub(e, 0);
+    std::uint32_t rel = 0;
+    if (!stub || !Rel32To(stub + jmp_back + 5, reinterpret_cast<u64>(site) + 5, rel)) {
+        return false;
+    }
+    std::memcpy(reinterpret_cast<u8*>(stub) + jmp_back + 1, &rel, 4);
+    return WriteJump(site, 0xe9, stub);
+}
+
 bool Wanted() {
     // Only with the game's memory in place (the launcher sets BB_GUEST_IN_PLACE from the memory
     // model before the game starts); BB_GUEST_HOOKS=0 leaves the game's code alone.
@@ -684,6 +731,7 @@ void PatchImage(unsigned char* image, std::uint64_t) {
         }
     }
     const bool gx_in = gx_guard && GuardGxNode(image);
+    const bool frame_in = gx_guard && GuardFrameNode(image);
     DWORD old = 0;
     VirtualProtect(stub_page, StubPageSize, PAGE_EXECUTE_READ, &old);
     FlushInstructionCache(GetCurrentProcess(), stub_page, StubPageSize);
@@ -694,8 +742,10 @@ void PatchImage(unsigned char* image, std::uint64_t) {
                     allocator ? "hooked" : "not found");
     }
     if (gx_guard) {
-        std::printf("Guest hooks: GX command node guard %s (BB_GX_NODE_GUARD=0: off)\n",
-                    gx_in ? "in" : "not installed (other code there)");
+        std::printf("Guest hooks: GX command node guard %s, frame render command guard %s "
+                    "(BB_GX_NODE_GUARD=0: off)\n",
+                    gx_in ? "in" : "not installed (other code there)",
+                    frame_in ? "in" : "not installed (other code there)");
     }
 }
 
