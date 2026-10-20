@@ -16,6 +16,10 @@ u64 GetRsp(void* ctx);
 
 void IncrementRip(void* ctx, u64 length);
 
+/// bbport: emulates a faulted `mov reg, [mem]` as a load of zero: sets rdi (`rdi` true) or r10
+/// and moves rip past the instruction. False where not implemented (only x86-64 Linux, Windows).
+bool ZeroLoadAndSkip(void* ctx, bool rdi, u64 length);
+
 bool IsWriteError(void* ctx);
 
 } // namespace Common

@@ -693,6 +693,111 @@ bool GuardFrameNode(u8* image) {
     return WriteJump(site, 0xe9, stub);
 }
 
+/// The frame's render memory: two arenas (one per frame, [0x55406c8] + 0x370 + 8 * index), each a
+/// single 256 KiB block (0x40000, set at 0x2195c09 and 0x2195c46) taken from the game's heap once
+/// at start and reset at each frame swap. The frame's render heaps (+0x360) take their chunks from
+/// it, and so do the nodes the two guards above check. The biggest user is the frame's draw list
+/// (0x2285c40): 0xb0 bytes + 8 per entry + 0x30 per visible item, copied whole into the frame
+/// heap each frame. On 2026-10-18 it reached 0x3f2c0 bytes (258752 of 262144) at an area load:
+/// the frame's commands had been left out for minutes before (the guards), then the list itself
+/// did not fit and the game copied it to address 0 (its memcpy, guest+0x261af9e). The arena is
+/// made bigger (BB_FRAME_ARENA_KB, default 512; 256: the game's own size).
+constexpr std::array<u64, 2> FrameArenaSizeSites = {0x2195c09, 0x2195c46}; // mov edx, 0x40000
+constexpr u64 FrameArenaGlobal = 0x55406c8;
+constexpr u64 DrawListSizeSite = 0x2285d3b; // mov r12d, [r15 + 0x80]: the draw list's size
+std::uint32_t frame_arena_bytes = 0x40000;
+const u8* guest_image = nullptr;
+
+struct ArenaUse {
+    u64 used = 0, size = 0;
+};
+/// The current frame's arena (its linear allocator at +8: begin, end, current), or zeros.
+ArenaUse CurrentFrameArena() {
+    const u64 owner = *reinterpret_cast<const u64*>(guest_image + FrameArenaGlobal);
+    if (owner == 0) {
+        return {};
+    }
+    const int index = *reinterpret_cast<const int*>(owner + 0x380);
+    const u64 arena = *reinterpret_cast<const u64*>(owner + 0x370 + 8 * u64(index & 1));
+    if (arena == 0) {
+        return {};
+    }
+    const u64 begin = *reinterpret_cast<const u64*>(arena + 8);
+    const u64 end = *reinterpret_cast<const u64*>(arena + 0x10);
+    const u64 current = *reinterpret_cast<const u64*>(arena + 0x18);
+    return {current - begin, end - begin};
+}
+
+std::atomic<std::uint32_t> draw_list_peak{0}, arena_peak{0};
+std::atomic<long long> draw_list_report_ms{0};
+GUEST_ABI void DrawListSized(std::uint32_t list_bytes) {
+    static std::atomic<bool> checked{false};
+    const ArenaUse arena = CurrentFrameArena();
+    if (!checked.exchange(true)) {
+        std::printf("Guest hooks: frame render memory %llu KiB per frame (asked for %u KiB)%s\n",
+                    (unsigned long long)(arena.size >> 10), frame_arena_bytes >> 10,
+                    arena.size >= frame_arena_bytes ? "" : ": NOT GIVEN by the game's heap");
+    }
+    std::uint32_t seen = draw_list_peak.load(std::memory_order_relaxed);
+    while (list_bytes > seen && !draw_list_peak.compare_exchange_weak(seen, list_bytes)) {
+    }
+    const auto used = std::uint32_t(arena.used);
+    seen = arena_peak.load(std::memory_order_relaxed);
+    while (used > seen && !arena_peak.compare_exchange_weak(seen, used)) {
+    }
+    const long long now = GetTickCount64();
+    long long last = draw_list_report_ms.load(std::memory_order_relaxed);
+    if (last == 0) {
+        draw_list_report_ms.compare_exchange_strong(last, now);
+    } else if (now - last >= 60000 && draw_list_report_ms.compare_exchange_strong(last, now)) {
+        std::printf("Guest hooks: frame render memory: draw list up to %u KiB, %u of %llu KiB in "
+                    "use when it was copied (largest of the minute)\n",
+                    draw_list_peak.exchange(0) >> 10, arena_peak.exchange(0) >> 10,
+                    (unsigned long long)(arena.size >> 10));
+    }
+}
+
+bool PatchFrameArena(u8* image) {
+    const char* env = std::getenv("BB_FRAME_ARENA_KB");
+    const long kb = env && env[0] ? std::strtol(env, nullptr, 10) : 512;
+    if (kb <= 256 || kb > 65536) {
+        return false;
+    }
+    static constexpr u8 Code[5] = {0xba, 0x00, 0x00, 0x04, 0x00}; // mov edx, 0x40000
+    for (const u64 site : FrameArenaSizeSites) {
+        if (std::memcmp(image + site, Code, sizeof(Code)) != 0) {
+            return false;
+        }
+    }
+    frame_arena_bytes = std::uint32_t(kb) << 10;
+    for (const u64 site : FrameArenaSizeSites) {
+        std::memcpy(image + site + 1, &frame_arena_bytes, 4);
+    }
+    return true;
+}
+
+bool HookDrawListSize(u8* image) {
+    u8* site = image + DrawListSizeSite;
+    static constexpr u8 Code[7] = {0x45, 0x8b, 0xa7, 0x80, 0x00, 0x00, 0x00};
+    if (std::memcmp(site, Code, sizeof(Code)) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.Bytes({0x45, 0x8b, 0xa7, 0x80, 0x00, 0x00, 0x00});             // mov r12d, [r15 + 0x80]
+    e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0xff, 0xff, 0xff});       // lea rsp, [rsp - 128]
+    e.SaveVolatile();
+    e.Bytes({0x44, 0x89, 0xe7});                                     // mov edi, r12d
+    e.CallAbs(reinterpret_cast<const void*>(&DrawListSized));
+    e.RestoreVolatile();
+    e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0x00, 0x00, 0x00});       // lea rsp, [rsp + 128]
+    if (!WriteJump(site, 0xe9, PlaceStub(e, reinterpret_cast<u64>(site) + 7))) {
+        return false;
+    }
+    site[5] = 0xcc; // never reached: the stub jumps back past them
+    site[6] = 0xcc;
+    return true;
+}
+
 bool Wanted() {
     // Only with the game's memory in place (the launcher sets BB_GUEST_IN_PLACE from the memory
     // model before the game starts); BB_GUEST_HOOKS=0 leaves the game's code alone.
@@ -706,7 +811,9 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     const bool memory_hooks = Wanted();
     const char* gx_env = std::getenv("BB_GX_NODE_GUARD");
     const bool gx_guard = !(gx_env && gx_env[0] == '0');
-    if (!memory_hooks && !gx_guard) {
+    const char* arena_env = std::getenv("BB_FRAME_ARENA_KB");
+    const bool arena_wanted = !(arena_env && arena_env[0] == '0');
+    if (!memory_hooks && !gx_guard && !arena_wanted) {
         return;
     }
     auto* p = static_cast<u8*>(runtime_low_map(StubPageSize, 3));
@@ -732,6 +839,9 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     }
     const bool gx_in = gx_guard && GuardGxNode(image);
     const bool frame_in = gx_guard && GuardFrameNode(image);
+    guest_image = image;
+    const bool arena_in = arena_wanted && PatchFrameArena(image);
+    const bool list_in = arena_wanted && HookDrawListSize(image);
     DWORD old = 0;
     VirtualProtect(stub_page, StubPageSize, PAGE_EXECUTE_READ, &old);
     FlushInstructionCache(GetCurrentProcess(), stub_page, StubPageSize);
@@ -746,6 +856,11 @@ void PatchImage(unsigned char* image, std::uint64_t) {
                     "(BB_GX_NODE_GUARD=0: off)\n",
                     gx_in ? "in" : "not installed (other code there)",
                     frame_in ? "in" : "not installed (other code there)");
+    }
+    if (arena_wanted) {
+        std::printf("Guest hooks: frame render memory %s, draw list size %s (BB_FRAME_ARENA_KB)\n",
+                    arena_in ? "made bigger" : "left as it is (other code there or 256)",
+                    list_in ? "watched" : "not watched (other code there)");
     }
 }
 

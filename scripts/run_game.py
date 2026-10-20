@@ -228,7 +228,7 @@ def ignore_interrupts():
 # BB_SAVE_LOG=1: the file this run's output is also written to (set in main()).
 SAVE_LOG = None
 
-# BB_LOG (Windows; Bloodborne.cmd quiet, Bloodborne-log.cmd normal, Bloodborne-fulllog.cmd full):
+# BB_LOG (Windows; Bloodborne.cmd normal, Bloodborne-fulllog.cmd full):
 # how much of bb-probe's output is shown and logged.
 #   quiet   startup, problems and the port's own events. Routine lines (memory, guest threads,
 #           save mounts, texture cache, ...) are held back; the last ROUTINE_KEPT of them come out

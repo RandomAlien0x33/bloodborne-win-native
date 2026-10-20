@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
+#include <span>
 #include <unordered_set>
 #include "common/serdes.h"
 #include "core/emulator_settings.h"
@@ -115,7 +117,9 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
     meta.Read(perm_idx);
 
     spec.Deserialize(ar);
-    info.Deserialize(ar);
+    if (!info.Deserialize(ar)) {
+        return false;
+    }
 
     // Motion vertex shaders embed session-local buffer device addresses. They must be
     // recompiled for the current allocation, never loaded from a previous process.
@@ -519,6 +523,18 @@ bool PersistentSrtInfo::Deserialize(Serialization::Archive& ar) {
         // a cut-short file must not have bytes past its end run as the walker.
         const auto code = ar.CurrPtr();
         ar.Advance(walker_func_size);
+        // bbport: earlier builds patched a load that faulted on a null table into `xor rdi, rdi`
+        // or `xor r10d, r10d`, and a walker patched on its first walk was stored so: it read
+        // empty sharps for good. The walker code has no such xor of its own; the stage is
+        // compiled again (a false match only costs that).
+        const std::span<const u8> bytes{reinterpret_cast<const u8*>(code), walker_func_size};
+        static constexpr std::array<u8, 3> patched_rdi{0x48, 0x31, 0xFF};
+        static constexpr std::array<u8, 3> patched_r10d{0x45, 0x31, 0xD2};
+        if (!std::ranges::search(bytes, patched_rdi).empty() ||
+            !std::ranges::search(bytes, patched_r10d).empty()) {
+            walker_func = nullptr;
+            return false;
+        }
         walker_func = RegisterWalkerCode(code, walker_func_size);
     }
 

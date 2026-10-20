@@ -26,6 +26,15 @@
 Windows 10/11 · 116 MB · no game files included
 </p>
 
+> [!IMPORTANT]
+> **Found a bug or had a crash? Send the log to [Issues](https://github.com/RandomAlien0x33/bloodborne-win-native/issues/new).** Every log sent is looked
+> into; without it the cause of a crash cannot be found. How:
+> 1. Right after the crash, **before starting the game again**, take the file `out\last-run.log`
+>    from the port's folder (every start overwrites the logs).
+> 2. Open a [new issue](https://github.com/RandomAlien0x33/bloodborne-win-native/issues/new): what happened and where in the game, the port's version, the
+>    graphics card, the memory mode.
+> 3. Drag the log file into the issue.
+
 > [!CAUTION]
 > **Graphics card with 4 GB of memory or less, or low FPS?** If the game crashes, the frame rate
 > is low or drops sharply after a while of playing, try the other memory modes: in the game's menu
@@ -35,12 +44,16 @@ Windows 10/11 · 116 MB · no game files included
 <br>
 
 <p>
-<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="32%" alt="Bloodborne Windows Native on YouTube: new video"></a>
-<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="32%" alt="Bloodborne Windows Native on YouTube: first video"></a>
-<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="32%" alt="Bloodborne Windows Native on YouTube: playthrough on this port"></a>
+<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: installation guide"></a>
+<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: gameplay demo"></a>
 </p>
 
-**▶ Watch on YouTube: [new video](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [first video](https://www.youtube.com/watch?v=JUkWqngg8r4) · [playthrough on this port](https://www.youtube.com/watch?v=lZabKv_oRko)**
+<p>
+<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: playthrough, part 1"></a>
+<a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><img src="media/video-preview-walkthrough-2.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: playthrough, part 2"></a>
+</p>
+
+**▶ Watch on YouTube: [installation guide](https://www.youtube.com/watch?v=JUkWqngg8r4) · [gameplay demo](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [playthrough, part 1](https://www.youtube.com/watch?v=lZabKv_oRko) · [playthrough, part 2](https://www.youtube.com/watch?v=jj1LN3LUq0E)**
 
 A Windows port of *Bloodborne* (PlayStation 4, version 1.09), based on the
 **[Linux port by deadinside28](https://github.com/deadinside28/bloodborne_pc)**.
@@ -235,13 +248,12 @@ switched off (`bbport.ini`).
 
 ## Logs
 
-Each start writes its log to `out\last-run.log` (the one before it: `out\prev-run.log`). Three
+Each start writes its log to `out\last-run.log` (the one before it: `out\prev-run.log`). The two
 launchers differ only in how much goes there:
 
 | Launcher | Log |
 |---|---|
-| `Bloodborne.cmd` | Short: startup, problems, the port's events. On a crash the last routine lines are added. |
-| `Bloodborne-log.cmd` | Everything the game and the port print. |
+| `Bloodborne.cmd` | Everything the game and the port print. |
 | `Bloodborne-fulllog.cmd` | Everything plus frame, GPU and memory statistics (a little slower). |
 
 When reporting a problem, attach `out\last-run.log`; if asked, start the game with the launcher
@@ -266,8 +278,8 @@ By hand:
 
 ## Credits
 
-- **[deadinside28](https://github.com/deadinside28/bloodborne_pc)**: bbport, the native port
-  this is built on.
+- **[deadinside28](https://github.com/deadinside28/bloodborne_pc)**: the Linux port this
+  Windows port is built on.
 - **[yumlevi](https://github.com/yumlevi/bloodborne_pc)**
 
 ## License

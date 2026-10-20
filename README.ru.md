@@ -27,6 +27,15 @@
 Windows 10/11 · 116 МБ · файлов игры нет
 </p>
 
+> [!IMPORTANT]
+> **Нашли ошибку или игра вылетела? Пришлите лог в [Issues](https://github.com/RandomAlien0x33/bloodborne-win-native/issues/new).** Каждый присланный
+> лог разбирается, без него причину вылета не найти. Как прислать:
+> 1. Сразу после вылета, **до следующего запуска игры**, найдите в папке порта файл
+>    `out\last-run.log` (каждый запуск перезаписывает логи).
+> 2. Откройте [новый issue](https://github.com/RandomAlien0x33/bloodborne-win-native/issues/new): что произошло и в какой момент игры, версия порта, видеокарта,
+>    режим памяти.
+> 3. Перетащите файл лога в окно issue.
+
 > [!CAUTION]
 > **Видеокарта с памятью 4 ГБ и меньше или низкий FPS?** Если игра вылетает, FPS низкий или резко
 > падает через какое-то время игры, попробуйте другие режимы памяти: в меню игры **Система → Дополнительно → Режим
@@ -36,12 +45,16 @@ Windows 10/11 · 116 МБ · файлов игры нет
 <br>
 
 <p>
-<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="32%" alt="Bloodborne Windows Native на YouTube: новое видео"></a>
-<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="32%" alt="Bloodborne Windows Native на YouTube: первое видео"></a>
-<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="32%" alt="Bloodborne Windows Native на YouTube: прохождение на этом порте"></a>
+<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: инструкция по установке"></a>
+<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: демонстрация игры"></a>
 </p>
 
-**▶ Смотреть на YouTube: [новое видео](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [первое видео](https://www.youtube.com/watch?v=JUkWqngg8r4) · [прохождение на этом порте](https://www.youtube.com/watch?v=lZabKv_oRko)**
+<p>
+<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: прохождение, часть 1"></a>
+<a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><img src="media/video-preview-walkthrough-2.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: прохождение, часть 2"></a>
+</p>
+
+**▶ Смотреть на YouTube: [инструкция по установке](https://www.youtube.com/watch?v=JUkWqngg8r4) · [демонстрация игры](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [прохождение, часть 1](https://www.youtube.com/watch?v=lZabKv_oRko) · [прохождение, часть 2](https://www.youtube.com/watch?v=jj1LN3LUq0E)**
 
 Порт *Bloodborne* (PlayStation 4, версия 1.09) для Windows на основе
 **[Linux-порта от deadinside28](https://github.com/deadinside28/bloodborne_pc)**.
@@ -237,13 +250,12 @@ key.square=E
 
 ## Логи
 
-Каждый запуск пишет лог в `out\last-run.log` (предыдущий — в `out\prev-run.log`). Три
+Каждый запуск пишет лог в `out\last-run.log` (предыдущий — в `out\prev-run.log`). Две
 запускалки отличаются только тем, сколько туда попадает:
 
 | Запускалка | Лог |
 |---|---|
-| `Bloodborne.cmd` | Короткий: запуск, проблемы, события порта. При вылете добавляются последние рядовые строки. |
-| `Bloodborne-log.cmd` | Всё, что пишут игра и порт. |
+| `Bloodborne.cmd` | Всё, что пишут игра и порт. |
 | `Bloodborne-fulllog.cmd` | Всё и статистика кадров, GPU и памяти (чуть медленнее). |
 
 Сообщая о проблеме, приложите `out\last-run.log`; если попросят — запустите игру указанной
@@ -268,8 +280,8 @@ key.square=E
 
 ## Благодарности
 
-- **[deadinside28](https://github.com/deadinside28/bloodborne_pc)** — bbport, нативный порт, на
-  котором построен этот.
+- **[deadinside28](https://github.com/deadinside28/bloodborne_pc)** — Linux-порт, на основе
+  которого построен этот Windows-порт.
 - **[yumlevi](https://github.com/yumlevi/bloodborne_pc)**
 
 ## Лицензия

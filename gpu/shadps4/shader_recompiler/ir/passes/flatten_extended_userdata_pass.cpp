@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <mutex>
+#include <atomic>
 #include <unordered_map>
 #include <boost/container/flat_map.hpp>
 #include <queue>
@@ -23,6 +23,7 @@
 #include "shader_recompiler/ir/reg.h"
 #include "shader_recompiler/ir/srt_gvn_table.h"
 #include "shader_recompiler/ir/value.h"
+#include "bbport_toggles.h"
 
 #ifdef ARCH_X86_64
 
@@ -85,17 +86,13 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
         return false; // Not in SRT code range
     }
 
-    // bbport: draw-preparation workers run the same walker concurrently; a second thread that
-    // faulted on the instruction before the first one patched it finds the patch and retries.
-    static std::mutex patch_mutex;
-    std::scoped_lock patch_lock{patch_mutex};
-    const u8* bytes = reinterpret_cast<const u8*>(code);
-    if ((bytes[0] == 0x48 && bytes[1] == 0x31 && bytes[2] == 0xFF) ||
-        (bytes[0] == 0x45 && bytes[1] == 0x31 && bytes[2] == 0xD2)) {
-        return true;
+    // bbport: a speculative reader (draw preparation ahead of the GPU thread) may walk tables
+    // the game has freed meanwhile: its recovery point takes the fault, and the GPU thread
+    // walks them again. Patching here made the stale null permanent for every later draw.
+    if (runtime_fault_recover) {
+        return false;
     }
 
-    // Patch instruction to zero register
     ZydisDecodedInstruction instruction;
     ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
     ZyanStatus status = Common::Decoder::Instance()->decodeInstruction(instruction, operands,
@@ -105,35 +102,26 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
            operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
            operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY);
 
-    size_t len = instruction.length;
-    const size_t patch_size = 3;
-    u8* code_patch = const_cast<u8*>(reinterpret_cast<const u8*>(code));
-
     // We can only encounter rdi or r10d as the first operand in a
     // fault memory access for SRT walker.
-    switch (operands[0].reg.value) {
-    case ZYDIS_REGISTER_RDI:
-        // mov rdi, [rdi + (off_dw << 2)] -> xor rdi, rdi
-        code_patch[0] = 0x48;
-        code_patch[1] = 0x31;
-        code_patch[2] = 0xFF;
-        break;
-    case ZYDIS_REGISTER_R10D:
-        // mov r10d, [rdi + (off_dw << 2)] -> xor r10d, r10d
-        code_patch[0] = 0x45;
-        code_patch[1] = 0x31;
-        code_patch[2] = 0xD2;
-        break;
-    default:
+    const auto reg = operands[0].reg.value;
+    if (reg != ZYDIS_REGISTER_RDI && reg != ZYDIS_REGISTER_R10D) {
         UNREACHABLE_MSG("Unsupported register for SRT walker patch");
         return false;
     }
 
-    // Fill nops
-    memset(code_patch + patch_size, 0x90, len - patch_size);
+    // bbport: this one load reads as zero (an empty sharp, as the patch gave); the code stays
+    // as it is, so the next draw reads the table again once the game has set it. A patched
+    // walker also went into the pipeline cache when the fault came from its first walk.
+    if (!Common::ZeroLoadAndSkip(context, reg == ZYDIS_REGISTER_RDI, instruction.length)) {
+        return false;
+    }
 
-    LOG_WARNING(Render_Recompiler, "Patched SRT walker at {}, fault address {}", code,
-                fault_address);
+    static std::atomic<u32> logged{0};
+    if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+        LOG_WARNING(Render_Recompiler, "SRT walker at {} read a null table (fault address {})",
+                    code, fault_address);
+    }
 
     return true;
 }

@@ -28,7 +28,7 @@ if not exist "%BB_GPU_USER_DIR%" mkdir "%BB_GPU_USER_DIR%"
 set "BB_PREBUILT=1"
 set "BB_PRODUCER_CHECK=1"
 if not defined BB_DLSS_MODEL set "BB_DLSS_MODEL=cnn"
-if not defined BB_LOG set "BB_LOG=quiet"
+if not defined BB_LOG set "BB_LOG=normal"
 if exist "%~dp0out\last-run.log" move /y "%~dp0out\last-run.log" "%~dp0out\prev-run.log" >nul
 call "%~dp0run.bat" %* 2>&1 | "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$w = New-Object IO.StreamWriter('%~dp0out\last-run.log', $false, (New-Object Text.UTF8Encoding($false))); $w.AutoFlush = $true; foreach ($line in $input) { $line; $w.WriteLine($line) }; $w.Close()"
 findstr /c:"Host fault" /c:"STOP:" "%~dp0out\last-run.log" >nul && (
@@ -38,13 +38,7 @@ findstr /c:"Host fault" /c:"STOP:" "%~dp0out\last-run.log" >nul && (
 )
 '''
 
-# More in out\last-run.log: everything the port prints, or that plus statistics (scripts/run_game.py BB_LOG).
-LAUNCHER_LOG = r'''@echo off
-setlocal
-set "BB_LOG=normal"
-call "%~dp0Bloodborne.cmd" %*
-'''
-
+# More in out\last-run.log: statistics on top of everything the port prints (scripts/run_game.py BB_LOG).
 LAUNCHER_FULL_LOG = r'''@echo off
 setlocal
 set "BB_LOG=full"
@@ -123,7 +117,6 @@ def main():
         shutil.copy2(ROOT / f, stage / f)
     (stage / 'run.bat').write_bytes(crlf((ROOT / 'run.bat').read_text(encoding='utf-8')).encode())
     (stage / 'Bloodborne.cmd').write_bytes(crlf(LAUNCHER).encode())
-    (stage / 'Bloodborne-log.cmd').write_bytes(crlf(LAUNCHER_LOG).encode())
     (stage / 'Bloodborne-fulllog.cmd').write_bytes(crlf(LAUNCHER_FULL_LOG).encode())
     # The settings the port is played with (bbport.default.ini): the defaults in the code render
     # the scene at full output size (Native AA), much slower.

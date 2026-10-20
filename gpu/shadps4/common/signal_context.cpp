@@ -53,6 +53,26 @@ u64 GetRsp(void* ctx) {
 #endif
 }
 
+bool ZeroLoadAndSkip(void* ctx, bool rdi, u64 length) {
+#if defined(_WIN32)
+    auto* c = ((EXCEPTION_POINTERS*)ctx)->ContextRecord;
+    // A 32-bit move zero-extends: r10d = 0 clears all of r10 too.
+    (rdi ? c->Rdi : c->R10) = 0;
+    c->Rip += length;
+    return true;
+#elif defined(__linux__) && defined(ARCH_X86_64)
+    auto& gregs = ((ucontext_t*)ctx)->uc_mcontext.gregs;
+    gregs[rdi ? REG_RDI : REG_R10] = 0;
+    gregs[REG_RIP] += length;
+    return true;
+#else
+    (void)ctx;
+    (void)rdi;
+    (void)length;
+    return false;
+#endif
+}
+
 bool IsWriteError(void* ctx) {
 #if defined(_WIN32)
     return ((EXCEPTION_POINTERS*)ctx)->ExceptionRecord->ExceptionInformation[0] == 1;
