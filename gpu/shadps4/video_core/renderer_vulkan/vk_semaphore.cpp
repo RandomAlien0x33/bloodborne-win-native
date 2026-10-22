@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
-#include <limits>
+#include <cstdio>
 #include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_semaphore.h"
@@ -9,8 +9,6 @@
 #include "common/assert.h"
 
 namespace Vulkan {
-
-constexpr u64 WAIT_TIMEOUT = std::numeric_limits<u64>::max();
 
 Semaphore::Semaphore(const Instance& instance_) : instance{instance_} {
     const vk::StructureChain semaphore_chain = {
@@ -66,15 +64,29 @@ void Semaphore::Wait(u64 tick) {
         .pValues = &tick,
     };
 
-    // bbport: a lost device ends the wait with a report instead of a silent endless loop.
-    while (true) {
-        const vk::Result result = instance.GetDevice().waitSemaphores(&wait_info, WAIT_TIMEOUT);
-        if (result == vk::Result::eSuccess) {
-            break;
-        }
-        if (result == vk::Result::eErrorDeviceLost) {
-            Breadcrumbs::ReportDeviceLost("waiting for a submission");
-            ASSERT_MSG(false, "Device lost while waiting for a submission");
+    // bbport: a lost device ends the wait with a report instead of a silent endless loop, and a
+    // GPU stuck without a reset is reported too (StuckWatch).
+    {
+        Breadcrumbs::StuckWatch watch{"waiting for a submission"};
+        while (true) {
+            const vk::Result result =
+                instance.GetDevice().waitSemaphores(&wait_info, Breadcrumbs::StuckWatch::Step);
+            if (result == vk::Result::eSuccess) {
+                break;
+            }
+            if (result == vk::Result::eErrorDeviceLost) {
+                Breadcrumbs::ReportDeviceLost("waiting for a submission");
+                ASSERT_MSG(false, "Device lost while waiting for a submission");
+            }
+            if (watch.Check()) {
+                auto [counter_result, counter] =
+                    instance.GetDevice().getSemaphoreCounterValue(*semaphore);
+                std::printf("GPU watchdog: waiting for submission %llu, the GPU finished %llu "
+                            "(%s)\n",
+                            (unsigned long long)tick, (unsigned long long)counter,
+                            vk::to_string(counter_result).c_str());
+                std::fflush(stdout);
+            }
         }
     }
     Refresh();

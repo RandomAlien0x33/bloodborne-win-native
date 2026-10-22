@@ -316,12 +316,46 @@ static void keep_unhandled_filter(void) {
         GetModuleFileNameA(handle, module, sizeof(module));
     fprintf(stderr, "Runtime: the crash handler was replaced by %s; the port's is back\n", module);
 }
+static void dump_threads(void);
+/* A game that stops showing frames (a GPU that never finishes, threads waiting for each other)
+ * froze with nothing in the log: after HANG_SECONDS without a new frame, once the first frames
+ * were shown, the threads are dumped once per stop, and the frames coming back are logged. */
+enum { HANG_SECONDS = 10 };
+static void watch_frames(void) {
+    static unsigned last_frames;
+    static ULONGLONG last_change;
+    static int dumped;
+    if (!gpu_enabled) return;
+    unsigned frames = bbgpu_frames_shown();
+    ULONGLONG now = GetTickCount64();
+    if (frames != last_frames) {
+        if (dumped)
+            fprintf(stderr, "Runtime: frames again after %llu s without\n",
+                    (unsigned long long)(now - last_change) / 1000);
+        last_frames = frames;
+        last_change = now;
+        dumped = 0;
+    } else if (frames && !dumped && now - last_change >= HANG_SECONDS * 1000) {
+        dumped = 1;
+        fprintf(stderr, "Runtime: no new frame for %d s (frame %u): the game is stuck, the threads follow "
+                        "(for a bug report: this log and the out\\hang_shader_*.bin files, if any)\n",
+                HANG_SECONDS, frames);
+        dump_threads();
+    }
+}
 static unsigned __stdcall dump_thread(void *event) {
     for (;;) {
         if (WaitForSingleObject(event, 2000) == WAIT_TIMEOUT) {
             keep_unhandled_filter();
+            watch_frames();
             continue;
         }
+        dump_threads();
+    }
+    return 0;
+}
+static void dump_threads(void) {
+    {
         DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
         unsigned count = 0;
         HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -361,7 +395,6 @@ static unsigned __stdcall dump_thread(void *event) {
         fprintf(stderr, "Thread dump end\n");
         fflush(NULL);
     }
-    return 0;
 }
 static void start_dump_thread(void) {
     wchar_t name[64];

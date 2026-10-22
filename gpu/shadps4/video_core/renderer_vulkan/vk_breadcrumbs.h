@@ -7,6 +7,7 @@
 // notes kept here say what it was. BB_BREADCRUMBS=0 turns them off.
 #pragma once
 
+#include <chrono>
 #include "common/types.h"
 #include "video_core/renderer_vulkan/vk_common.h"
 
@@ -46,6 +47,29 @@ void ReportDeviceLost(const char* where);
 void ReportStuck(const char* where);
 /// Frame statistics: per stream, the commands noted and how many the GPU has yet to finish.
 void PrintProgress();
+
+/// A wait for the GPU made of bounded steps (Step ns each). A GPU that stays busy without a
+/// reset (a shader that never ends: the driver preempts it, so no timeout comes) froze the game
+/// with nothing in the log: Check(), after each step that timed out, says once per wait that the
+/// GPU is stuck once it has waited StuckAfter, with the report above (once per run); the
+/// destructor says when such a wait ended after all.
+class StuckWatch {
+public:
+    static constexpr u64 Step = 1'000'000'000;
+    static constexpr std::chrono::seconds StuckAfter{2}; ///< Windows resets a GPU silent this long
+
+    explicit StuckWatch(const char* what_) : what{what_} {}
+    ~StuckWatch();
+    /// True the one time it reports.
+    bool Check();
+    StuckWatch(const StuckWatch&) = delete;
+    StuckWatch& operator=(const StuckWatch&) = delete;
+
+private:
+    const char* what;
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    bool reported = false;
+};
 
 /// Breadcrumbs around what is recorded on `cmdbuf` right here (not deferred) in the scope.
 class Scope {

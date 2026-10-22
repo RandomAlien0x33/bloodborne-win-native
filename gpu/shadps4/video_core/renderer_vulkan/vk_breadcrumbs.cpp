@@ -324,6 +324,27 @@ void ReportStuck(const char* where) {
     }
 }
 
+bool StuckWatch::Check() {
+    if (reported || std::chrono::steady_clock::now() - start < StuckAfter) {
+        return false;
+    }
+    reported = true;
+    std::printf("GPU watchdog: %s, not done after %lld s: the GPU is stuck\n", what,
+                (long long)StuckAfter.count());
+    ReportStuck(what);
+    std::fflush(stdout);
+    return true;
+}
+
+StuckWatch::~StuckWatch() {
+    if (reported) {
+        const auto seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start);
+        std::printf("GPU watchdog: %s, done after %lld s\n", what, (long long)seconds.count());
+        std::fflush(stdout);
+    }
+}
+
 namespace {
 void Report(const char* title, const char* where) {
     std::printf("GPU breadcrumbs %s (%s): what each command stream finished\n", title, where);

@@ -30,6 +30,33 @@ namespace VideoCore {
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
 
+/// bbport: a view must stay inside the image it is taken from. When the requested image is a
+/// mip or slice of a cached one, FindImage moves the view's base there, and the cached image may
+/// have fewer levels or layers past it than the guest descriptor names (the overlap check
+/// compares the counts alone, and levels before layers): the out-of-range view failed the
+/// subresource assertion in Image::GetBarriers (crash at an area load after a save-copy load).
+/// Such views are cut to what the image has; the first few are logged.
+static void FitViewToImage(ImageViewInfo& view, const ImageInfo& image) {
+    auto& range = view.range;
+    const u32 levels = image.resources.levels, layers = image.resources.layers;
+    if (range.base.level + range.extent.levels <= levels &&
+        range.base.layer + range.extent.layers <= layers) {
+        return;
+    }
+    static std::atomic<u32> reported{0};
+    if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+        std::printf("Texture cache: view of mips %u+%u, layers %u+%u cut to the image's %u mips, %u "
+                    "layers (%#llx, %ux%u)\n",
+                    range.base.level, range.extent.levels, range.base.layer, range.extent.layers,
+                    levels, layers, (unsigned long long)image.guest_address, image.size.width,
+                    image.size.height);
+    }
+    range.base.level = std::min(range.base.level, levels - 1);
+    range.extent.levels = std::min(range.extent.levels, levels - range.base.level);
+    range.base.layer = std::min(range.base.layer, layers - 1);
+    range.extent.layers = std::min(range.extent.layers, layers - range.base.layer);
+}
+
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                            BufferCache& buffer_cache_, PageManager& tracker_)
@@ -696,6 +723,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
         if (cached.view_slice > 0) {
             desc.view_info.range.base.layer = cached.view_slice;
         }
+        FitViewToImage(desc.view_info, image.info);
         return cached.image_id;
     }
 
@@ -775,6 +803,7 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
     if (view_slice > 0) {
         desc.view_info.range.base.layer = view_slice;
     }
+    FitViewToImage(desc.view_info, image.info);
 
     cached = FindImageCacheEntry{
         .address = info.guest_address,

@@ -44,6 +44,8 @@ void bbgpu_patch_image(unsigned char *image, uint64_t size);
 int bbgpu_mouse_take(float *dx, float *dy, uint32_t *buttons);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned bbgpu_symbol_count(void);
+/* Game frames the presenter has taken so far (the hang watch in probe.c: frames that stop). */
+unsigned bbgpu_frames_shown(void);
 #ifdef __cplusplus
 }
 #endif

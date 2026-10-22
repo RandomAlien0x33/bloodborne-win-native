@@ -252,9 +252,11 @@ Frame* Presenter::PrepareLastFrame() {
 
     Frame* frame = last_submit_frame;
 
+    Breadcrumbs::StuckWatch watch{"waiting for the last frame"};
     while (true) {
+        watch.Check();
         vk::Result result = instance.GetDevice().waitForFences(frame->present_done, false,
-                                                               std::numeric_limits<u64>::max());
+                                                               Breadcrumbs::StuckWatch::Step);
         if (result == vk::Result::eSuccess) {
             break;
         }
@@ -774,12 +776,14 @@ Frame* Presenter::GetRenderFrame() {
     vk::Result result{};
 
     const auto wait = [&]() {
-        result = device.waitForFences(frame->present_done, false, std::numeric_limits<u64>::max());
+        result = device.waitForFences(frame->present_done, false, Breadcrumbs::StuckWatch::Step);
         return result;
     };
 
     // Wait for the presentation to be finished so all frame resources are free
+    Breadcrumbs::StuckWatch watch{"waiting for a frame to be shown"};
     while (wait() != vk::Result::eSuccess) {
+        watch.Check();
         if (result == vk::Result::eErrorDeviceLost) {
             Breadcrumbs::ReportDeviceLost("waiting for a frame");
         }

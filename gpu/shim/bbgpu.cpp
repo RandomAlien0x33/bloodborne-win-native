@@ -377,6 +377,10 @@ extern "C" unsigned bbgpu_symbol_count(void) {
     return unsigned(g_symbols.size());
 }
 
+extern "C" unsigned bbgpu_frames_shown(void) {
+    return BbStats::frame_number.load(std::memory_order_relaxed);
+}
+
 // Kernel service thread: runs boost::asio timers for equeue timer events.
 namespace Libraries::Kernel {
 boost::asio::io_context io_context;

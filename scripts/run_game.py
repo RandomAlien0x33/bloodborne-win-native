@@ -22,6 +22,7 @@ import collections
 import glob
 import os
 from pathlib import Path
+import platform
 import re
 import shlex
 import shutil
@@ -355,10 +356,83 @@ def start(command, probe, overlay):
     return exit_status(child.wait())
 
 
+def port_version():
+    """The port's version for the log (call chains in a log sent by a player are read with the
+    same bb-probe.exe): out/VERSION.txt of a release package, otherwise the git commit and the
+    time bb-probe.exe was built."""
+    stamp = ROOT / 'out' / 'VERSION.txt'
+    if stamp.is_file():
+        return stamp.read_text(encoding='utf-8').strip()
+    try:
+        commit = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, capture_output=True,
+                                text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        commit = ''
+    version = f'local build {commit}' if commit else 'local build'
+    exe = ROOT / 'out' / ('bb-probe.exe' if WINDOWS else 'bb-probe')
+    if exe.is_file():
+        version += time.strftime(', bb-probe built %Y-%m-%d %H:%M', time.localtime(exe.stat().st_mtime))
+    return version
+
+
+def machine_summary():
+    """CPU and RAM for the log, as far as they can be read."""
+    cpu, ram = platform.processor(), ''
+    if WINDOWS:
+        import ctypes
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'HARDWARE\DESCRIPTION\System\CentralProcessor\0') as key:
+                cpu = winreg.QueryValueEx(key, 'ProcessorNameString')[0].strip()
+        except OSError:
+            pass
+
+        class MemoryStatus(ctypes.Structure):
+            _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong), ('total', ctypes.c_ulonglong),
+                        ('available', ctypes.c_ulonglong), ('page_total', ctypes.c_ulonglong),
+                        ('page_available', ctypes.c_ulonglong), ('virtual_total', ctypes.c_ulonglong),
+                        ('virtual_available', ctypes.c_ulonglong), ('extended', ctypes.c_ulonglong)]
+        status = MemoryStatus(length=ctypes.sizeof(MemoryStatus))
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            ram = f', RAM {status.total / 2**30:.0f} GiB ({status.available / 2**30:.0f} GiB free)'
+    else:
+        try:
+            for line in Path('/proc/cpuinfo').read_text().splitlines():
+                if line.startswith('model name'):
+                    cpu = line.split(':', 1)[1].strip()
+                    break
+            for line in Path('/proc/meminfo').read_text().splitlines():
+                if line.startswith('MemTotal:'):
+                    ram = f', RAM {int(line.split()[1]) / 2**20:.0f} GiB'
+                    break
+        except OSError:
+            pass
+    return f'{cpu or "unknown CPU"}{ram}'
+
+
+def settings_summary(config):
+    """bbport.ini in one line for the log, without the folders (they may hold the player's name)."""
+    try:
+        lines = Path(config).read_text(errors='replace').splitlines()
+    except OSError:
+        return 'none'
+    values = {}
+    for line in lines:
+        line = line.strip()
+        if '=' not in line or line.startswith(('#', ';', '[')):
+            continue
+        key, value = (part.strip() for part in line.split('=', 1))
+        if key.endswith('_dir') or ':\\' in value or value.startswith('/'):
+            value = '(set)' if value else ''
+        values[key] = value
+    return ' '.join(f'{k}={v}' for k, v in values.items()) or 'none'
+
+
 def main():
     caller_dir = os.getcwd()
     os.chdir(ROOT)
     sys.stdout.reconfigure(line_buffering=True)
+    print(f'Port: {port_version()}; {platform.system()} {platform.version()}; {machine_summary()}')
     if not WINDOWS:
         signal.signal(signal.SIGINT, signal.SIG_DFL)  # Ctrl+C ends the launch as it ended run.sh
     arguments = sys.argv[1:]
@@ -385,6 +459,7 @@ def main():
     if not os.path.exists(config) and (ROOT / 'bbport.default.ini').is_file():
         shutil.copyfile(ROOT / 'bbport.default.ini', config)
         print(f'Settings: {config} created from bbport.default.ini')
+    print(f'Settings: {settings_summary(config)}')
     # FSR 4.1.1 assets (tools/fsr4cap/build_assets.sh): in the port's folder or the data folder.
     if not env('BB_FSR411_DIR') and not os.path.isdir('fsr4_411') and os.path.isdir(os.path.join(data, 'fsr4_411')):
         os.environ['BB_FSR411_DIR'] = os.path.join(data, 'fsr4_411')

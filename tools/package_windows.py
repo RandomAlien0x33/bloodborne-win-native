@@ -103,6 +103,10 @@ def main():
     dlls = dll_closure(executables)
     for dll in dlls:
         shutil.copy2(dll, stage / 'out')
+    # The launcher prints it first in the log: call chains in a player's log are read with this exe.
+    commit = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, capture_output=True, text=True,
+                            check=True).stdout.strip()
+    (stage / 'out' / 'VERSION.txt').write_text(f'{a.version} ({commit})\n', encoding='utf-8')
     for extra in ('nvngx_dlss.dll', 'LICENSE-DLSS-SDK.txt'):
         if (out / extra).is_file():
             shutil.copy2(out / extra, stage / 'out')

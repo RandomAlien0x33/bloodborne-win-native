@@ -484,7 +484,7 @@ void Rasterizer::GpuSignalLoop(std::stop_token token) {
             .pValues = &tick,
         };
         // bbport: a lost device ends the wait with a report (it spun here forever: the game froze
-        // with its sound playing, Steam Deck); 10 s without progress prints what is stuck once.
+        // with its sound playing, Steam Deck); 2 s without progress prints what is stuck once.
         const auto wait_start = std::chrono::steady_clock::now();
         bool watched = false;
         while (!token.stop_requested()) {
@@ -496,7 +496,7 @@ void Rasterizer::GpuSignalLoop(std::stop_token token) {
                 Breadcrumbs::ReportDeviceLost("waiting for the GPU");
                 ASSERT_MSG(false, "Device lost while waiting for the GPU");
             }
-            if (!watched && std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(10)) {
+            if (!watched && std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(2)) {
                 watched = true;
                 GpuWatchdog(tick);
             }
@@ -525,13 +525,13 @@ void Rasterizer::GpuWatchdog(u64 tick) {
     semaphore->Refresh();
     const u64 done = semaphore->KnownGpuTick(), recording = scheduler.CurrentTick();
     if (tick < recording) {
-        std::printf("GPU watchdog: submission %llu not finished after 10 s (the GPU finished %llu, "
+        std::printf("GPU watchdog: submission %llu not finished after 2 s (the GPU finished %llu, "
                     "recording %llu): the GPU is stuck\n",
                     (unsigned long long)tick, (unsigned long long)done, (unsigned long long)recording);
         buffer_cache.ReportArenaBinds();
-        Breadcrumbs::ReportStuck("submitted work not finished in 10 s");
+        Breadcrumbs::ReportStuck("submitted work not finished in 2 s");
     } else {
-        std::printf("GPU watchdog: waited 10 s for submission %llu, not submitted yet (the GPU finished "
+        std::printf("GPU watchdog: waited 2 s for submission %llu, not submitted yet (the GPU finished "
                     "%llu, recording %llu, draw pipe backlog %llu bytes): the port's threads are "
                     "waiting for each other\n",
                     (unsigned long long)tick, (unsigned long long)done, (unsigned long long)recording,
