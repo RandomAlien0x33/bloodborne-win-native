@@ -81,6 +81,10 @@ struct InfoPersistent {
         : hw_stage{hw_stage_}, sw_stage{sw_stage_}, pgm_hash{pgm_hash_} {}
 };
 
+struct Info;
+/// bbport: the shader whose SRT walker runs on this thread (the null table report names it).
+extern thread_local const Info* srt_walking_info;
+
 struct Info : InfoPersistent {
     struct AttributeFlags {
         bool Get(IR::Attribute attrib, u32 comp = 0) const {
@@ -249,7 +253,9 @@ struct Info : InfoPersistent {
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());
         if (srt_info.walker_func) {
+            srt_walking_info = this;
             srt_info.walker_func(user_data.data(), flattened_ud_buf.data());
+            srt_walking_info = nullptr;
         }
     }
 

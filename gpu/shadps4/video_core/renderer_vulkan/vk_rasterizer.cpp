@@ -1818,11 +1818,6 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
             });
         }
     }
-    {
-        BB_SECTION(PipelineBind);
-        pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
-                                {buffer_infos.data(), buffer_infos.size()});
-    }
     // bbport: jitter geometry drawn with the scene depth, not full-screen passes (a shifted
     // full-screen quad leaves an edge column unwritten).
     draw_jitter = {};
@@ -1836,6 +1831,15 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
         occlusion->SetPassScale(target_scale[0] * target_scale[1]); // samples at the game's size
     }
     scheduler.BeginRendering(state);
+    // bbport: push constants after the pass begins (deadinside28, 0.6): beginning it may record
+    // the occlusion results' compute dispatch (OcclusionQueries::Suspend -> Resolve), whose own
+    // push constants leave the draw's undefined: single frames shifted by half the screen or
+    // squeezed into a corner.
+    {
+        BB_SECTION(PipelineBind);
+        pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
+                                {buffer_infos.data(), buffer_infos.size()});
+    }
 
     const auto& vs_info = pipeline->GetStage(Shader::SwStage::Vertex);
     const auto& fetch_shader = pipeline->GetFetchShader();
@@ -1937,12 +1941,6 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     if (!BindResources(pipeline)) {
         return;
     }
-    const auto state = BeginRendering(pipeline);
-
-    BindVertexBuffers(pipeline);
-    if (is_indexed) {
-        BindIndexBuffer();
-    }
 
     const auto [buffer, base] =
         buffer_cache.ObtainBuffer(indirect.args, stride * max_count, false);
@@ -1955,6 +1953,36 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         needs_barrier |= runtime.IsBufferAccessed(count_buffer, count_offset, 4);
     }
 
+    // bbport: vertex counts checked on the GPU first, like indirect dispatches
+    // (vk_indirect_guard.h). The check is a dispatch: recorded outside the render pass, before
+    // the attachments are chosen (their clears are decided there) and before the bindings.
+    // What the game wrote goes to the breadcrumbs too (a copy: outside the render pass only).
+    vk::Buffer args = buffer->Handle();
+    u64 args_offset = base;
+    u32 args_slot = ~0u;
+    if (IndirectGuard::Enabled() && max_count == 1) {
+        if (needs_barrier) {
+            runtime.FlushBarriers();
+        }
+        scheduler.EndRendering();
+        if (!indirect_guard) {
+            indirect_guard = std::make_unique<IndirectGuard>(instance, scheduler);
+        }
+        args_slot = Breadcrumbs::ArgsSlot();
+        scheduler.Record([raw_args = buffer->Handle(), base, args_slot](vk::CommandBuffer cmdbuf) {
+            Breadcrumbs::CopyArgs(cmdbuf, raw_args, base, args_slot);
+        });
+        std::tie(args, args_offset) =
+            indirect_guard->CheckDrawArgs(*buffer, base, stride / u32(sizeof(u32)));
+    }
+
+    const auto state = BeginRendering(pipeline);
+
+    BindVertexBuffers(pipeline);
+    if (is_indexed) {
+        BindIndexBuffer();
+    }
+
     if (needs_barrier) {
         runtime.FlushBarriers();
     }
@@ -1964,8 +1992,6 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
     push_data.xoffset *= target_scale[0];
     push_data.yscale *= target_scale[1];
     push_data.yoffset *= target_scale[1];
-    pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
-                            {buffer_infos.data(), buffer_infos.size()});
     draw_jitter = {};
     if (upscaler->Enabled() && db_desc.first && db_desc.first == camera_motion->Depth()) {
         draw_jitter = upscaler->Jitter();
@@ -1976,12 +2002,13 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         occlusion->SetPassScale(target_scale[0] * target_scale[1]); // samples at the game's size
     }
     scheduler.BeginRendering(state);
+    // bbport: push constants after the pass begins, as for direct draws.
+    pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
+                            {buffer_infos.data(), buffer_infos.size()});
 
     ASSERT(stride == (is_indexed ? sizeof(VkDrawIndexedIndirectCommand)
                                  : sizeof(VkDrawIndirectCommand)));
     const vk::Pipeline handle = pipeline->Handle();
-    const vk::Buffer args = buffer->Handle();
-    const u64 args_offset = base;
     const vk::Buffer counts = count_address != 0 ? count_buffer->Handle() : vk::Buffer{};
     const u64 counts_offset = count_address != 0 ? count_offset : 0;
     const auto* vs_crumb = pipeline->GetStages()[u32(Shader::SwStage::Vertex)];
@@ -1993,6 +2020,7 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
                     ps_crumb ? ps_crumb->ProgramBase() : 0},
         .address = indirect.args,
         .count = {max_count, stride, 0},
+        .args_slot = args_slot,
     };
     scheduler.RecordCrumb(crumb, [=](vk::CommandBuffer cmdbuf) {
         cmdbuf.bindPipeline(vk::PipelineBindPoint::eGraphics, handle);
@@ -2929,8 +2957,20 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run) {
     // Image copy must be valid
     VideoCore::Image& image0 = texture_cache.GetImage(image0_id);
     VideoCore::Image& image1 = texture_cache.GetImage(image1_id);
-    if (image0.info.guest_size != image1.info.guest_size ||
-        image0.info.pitch != image1.info.pitch || image0.info.guest_size != buf0.GetSize() ||
+    // bbport (deadinside28, 0.6): the buffers may run past the images, padding up to the next
+    // one: the light shafts' 960x540 targets are copied as 0x241800 bytes of 0x240000, 5 times a
+    // frame, there and back. Missed, the shader ran: each image written back into memory, copied,
+    // and uploaded again. The bytes past the image are copied as a buffer.
+    // BB_IMAGE_COPY_TAIL=0: only exact sizes, as before.
+    static const bool tail_allowed = [] {
+        const char* env = std::getenv("BB_IMAGE_COPY_TAIL");
+        return !(env && env[0] == '0');
+    }();
+    constexpr u64 MaxTail = 64_KB;
+    const u64 image_size = image0.info.guest_size;
+    const u64 copy_size = buf0.GetSize();
+    if (image_size != image1.info.guest_size || image0.info.pitch != image1.info.pitch ||
+        copy_size < image_size || copy_size - image_size > (tail_allowed ? MaxTail : 0) ||
         image0.info.num_bits != image1.info.num_bits) {
         return false;
     }
@@ -2957,6 +2997,18 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run) {
         return false;
     }
     runtime.CopyColorAndDepth(&src_image, &dst_image);
+    if (const u64 tail = copy_size - image_size) {
+        // As the shader would have: those bytes written in memory (tracked by the buffer cache).
+        // No image is marked for refresh there: the shader's own path marks only the image at
+        // the buffer's start, and a neighbour starting in the tail is larger than it (it would
+        // be uploaded again from memory it only partly holds).
+        const VAddr src_tail = src_image.info.guest_address + image_size;
+        const VAddr dst_tail = dst_image.info.guest_address + image_size;
+        const auto [src_buffer, src_offset] = buffer_cache.ObtainBuffer(src_tail, u32(tail), false);
+        const auto [dst_buffer, dst_offset] = buffer_cache.ObtainBuffer(dst_tail, u32(tail), true);
+        const vk::BufferCopy copy{src_offset, dst_offset, tail};
+        runtime.CopyBuffer(src_buffer, dst_buffer, {&copy, 1});
+    }
     return true;
 }
 

@@ -13,6 +13,7 @@
 #include "common/logging/log.h"
 #include "common/path_util.h"
 #include "common/signal_context.h"
+#include "common/thread.h"
 #include "core/emulator_settings.h"
 #include "core/signals.h"
 #include "shader_recompiler/info.h"
@@ -24,6 +25,10 @@
 #include "shader_recompiler/ir/srt_gvn_table.h"
 #include "shader_recompiler/ir/value.h"
 #include "bbport_toggles.h"
+
+namespace Shader {
+thread_local const Info* srt_walking_info = nullptr;
+}
 
 #ifdef ARCH_X86_64
 
@@ -121,6 +126,33 @@ static bool SrtWalkerSignalHandler(void* context, void* fault_address) {
     if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
         LOG_WARNING(Render_Recompiler, "SRT walker at {} read a null table (fault address {})",
                     code, fault_address);
+    }
+
+    // bbport: which shader read it, once per shader: its hash matches the breadcrumbs' draws at a
+    // device lost, and its user data shows which register held the null pointer.
+    if (const Shader::Info* info = Shader::srt_walking_info) {
+        static std::array<std::atomic<u64>, 32> reported{};
+        const u64 hash = info->pgm_hash;
+        for (auto& slot : reported) {
+            u64 seen = slot.load(std::memory_order_relaxed);
+            if (seen == 0 && slot.compare_exchange_strong(seen, hash)) {
+                std::string ud;
+                for (const u32 value : info->user_data) {
+                    ud += fmt::format(" {:08x}", value);
+                }
+                LOG_WARNING(Render_Recompiler,
+                            "SRT walker: {} shader {:016x} read a null table (walker +{:#x}, "
+                            "thread {}); user data:{}",
+                            info->hw_stage, hash,
+                            static_cast<const u8*>(code) -
+                                reinterpret_cast<const u8*>(info->srt_info.walker_func),
+                            Common::GetCurrentThreadName(), ud);
+                break;
+            }
+            if (seen == hash) {
+                break;
+            }
+        }
     }
 
     return true;

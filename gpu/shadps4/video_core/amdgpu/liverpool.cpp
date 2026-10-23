@@ -607,6 +607,41 @@ void RunZpassDone(Vulkan::Rasterizer& rasterizer, const u8* data) {
     rasterizer.OcclusionEvent(event.address, event.pairs);
 }
 
+// bbport: the fixed counters (occlusion queries not translated: everything visible), written in
+// stream order like WRITE_DATA. Written when decoded, they landed before the game's own reset of
+// the query (a WRITE_DATA or DMA fill just before the begin event, run in order on the recording
+// thread): zeroed after, the query never completed, and the game kept it in the list of queries
+// it copies into every frame's render memory and polls each frame: ~10 more a second, all session
+// (the frame's render memory ran out after 1-2 hours). BB_OCCLUSION_IN_ORDER=0: when decoded.
+struct ZpassCounters {
+    VAddr address;
+    u64 value;
+    u32 pairs;
+};
+
+void RunZpassCounters(Vulkan::Rasterizer& rasterizer, const u8* data) {
+    ZpassCounters task;
+    std::memcpy(&task, data, sizeof(task));
+    for (u32 i = 0; i < task.pairs; ++i) {
+        const VAddr address = task.address + i * 16;
+        if (rasterizer.WriteDataOnGpu(address, &task.value, sizeof(task.value))) {
+            continue;
+        }
+        rasterizer.WaitHostCopiesFor(address, sizeof(task.value));
+        rasterizer.WaitDeferredSignals();
+        std::memcpy(reinterpret_cast<void*>(address), &task.value, sizeof(task.value));
+        rasterizer.NoteCommandWrite(address, &task.value, sizeof(task.value), true);
+    }
+}
+
+bool ZpassInOrder() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_OCCLUSION_IN_ORDER");
+        return !(env && env[0] == '0');
+    }();
+    return enabled;
+}
+
 // bbport: COPY_DATA from memory or GDS, or of a value into GDS, on the recording thread in stream
 // order, as DMA_DATA (RunDmaData).
 struct CopyDataTask {
@@ -1945,6 +1980,15 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                         }
                         static constexpr u64 OcclusionCounterValidMask = 0x8000000000000000ULL;
                         static constexpr u64 OcclusionCounterStep = 0x2FFFFFFULL;
+                        if (rasterizer && ZpassInOrder()) {
+                            const ZpassCounters task{event->Address<VAddr>(),
+                                                     pixel_counter | OcclusionCounterValidMask,
+                                                     u32(num_counter_pairs)};
+                            rasterizer->RunInOrder(&RunZpassCounters, &task, sizeof(task),
+                                                   BbToggle::PipelinedMemoryWrites, false);
+                            pixel_counter += OcclusionCounterStep;
+                            break;
+                        }
                         u64* results = event->Address<u64*>();
                         for (s32 i = 0; i < num_counter_pairs; ++i, results += 2) {
                             *results = pixel_counter | OcclusionCounterValidMask;

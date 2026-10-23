@@ -2,23 +2,49 @@
 // bbport: the group counts of an indirect dispatch, checked on the GPU before it runs
 // (vk_indirect_guard.cpp). Counts no game dispatches on purpose (billions of groups: garbage in
 // the arguments) would keep the GPU busy past the kernel's timeout and lose the device; such a
-// dispatch runs no groups instead, and is counted.
+// dispatch runs no groups instead, and is counted. Indirect draws (push.draw) the same way: a
+// vertex (index) count times instances past push.max_total draws nothing.
 #version 450
 
 layout(local_size_x = 1) in;
 
 layout(std430, binding = 0) readonly buffer Args { uint args[]; };
 layout(std430, binding = 1) writeonly buffer Checked { uint checked[]; };
-layout(std430, binding = 2) buffer Skipped { uint skipped; uvec3 last; };
+layout(std430, binding = 2) buffer Skipped {
+    uint skipped;
+    uint skipped_draws;
+    uvec3 last;
+    uvec3 draw_last;
+    uint largest;      // groups of the largest dispatch that ran
+    uint draw_largest; // vertices x instances of the largest draw that ran
+};
 
 layout(push_constant) uniform Push {
     uvec3 max_count; // the device's limit per dimension
     uint first;      // the arguments' first dword in binding 0
-    uint max_total;  // groups in all
+    uint max_total;  // groups (vertices or indices for draws) in all
     uint slot;       // where in binding 1 (dwords)
+    uint draw;       // dwords of a draw's arguments (4, or 5 indexed); 0: a dispatch
 } push;
 
 void main() {
+    if (push.draw != 0) {
+        const uint count = args[push.first];
+        const uint instances = args[push.first + 1];
+        uint high, total;
+        umulExtended(count, instances, high, total);
+        const bool plausible = high == 0 && total <= push.max_total;
+        for (uint i = 0; i < push.draw; ++i) {
+            checked[push.slot + i] = plausible || i >= 2 ? args[push.first + i] : 0;
+        }
+        if (!plausible) {
+            atomicAdd(skipped_draws, 1);
+            draw_last = uvec3(count, instances, args[push.first + 2]);
+        } else {
+            atomicMax(draw_largest, total);
+        }
+        return;
+    }
     const uvec3 groups = uvec3(args[push.first], args[push.first + 1], args[push.first + 2]);
     uint high, low, high2, total;
     umulExtended(groups.x, groups.y, high, low);
@@ -32,5 +58,7 @@ void main() {
     if (!plausible) {
         atomicAdd(skipped, 1);
         last = groups;
+    } else {
+        atomicMax(largest, total);
     }
 }

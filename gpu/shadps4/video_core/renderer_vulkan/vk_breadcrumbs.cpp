@@ -10,6 +10,7 @@
 #include <mutex>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "video_core/page_manager.h"
 #include "video_core/renderer_vulkan/vk_breadcrumbs.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 
@@ -24,7 +25,7 @@ namespace {
 constexpr u32 MaxStreams = 16;
 constexpr u32 StreamStride = 64; // bytes of the marker buffer per stream (a cache line)
 constexpr u64 RingSize = 1u << 15;
-constexpr u32 ArgSlots = 4096;                     // indirect dispatch arguments, 16 bytes each
+constexpr u32 ArgSlots = 4096;                     // indirect arguments, 16 bytes each
 constexpr u64 ArgsOffset = MaxStreams * StreamStride; // where they start in the buffer
 
 struct Entry {
@@ -53,6 +54,7 @@ struct ArgsNote {
     u64 id;
     u32 stream;
     u64 hash;
+    bool draw;
 };
 std::array<ArgsNote, ArgSlots> args_notes{};
 
@@ -148,6 +150,10 @@ void PrintEntry(const Stream& stream, u64 id, const char* label) {
         std::printf(" vs %016llx ps %016llx, up to %u draws, stride %u, arguments at %#llx",
                     (unsigned long long)c.hash[0], (unsigned long long)c.hash[1], c.count[0],
                     c.count[1], (unsigned long long)c.address);
+        if (c.args_slot < ArgSlots) {
+            const volatile u32* read = args + c.args_slot * 4;
+            std::printf(" (the game wrote %u x %u instances from %u)", read[0], read[1], read[2]);
+        }
         u32 now[5]{};
         if (ReadGuest(c.address, now, sizeof(now)) == sizeof(now)) {
             std::printf(" (guest memory now %u %u %u %u %u)", now[0], now[1], now[2], now[3], now[4]);
@@ -245,7 +251,8 @@ u32 Note(u32 stream_index, const Crumb& crumb) {
     entry.crumb = crumb;
     entry.id = id;
     if (crumb.args_slot < ArgSlots) {
-        args_notes[crumb.args_slot] = {id, stream_index, crumb.hash[0]};
+        args_notes[crumb.args_slot] = {id, stream_index, crumb.hash[0],
+                                       crumb.kind == Kind::DrawIndirect};
     }
     return u32(id);
 }
@@ -278,6 +285,13 @@ void ReportDeviceLost(const char* where) {
     static std::atomic_flag reported = ATOMIC_FLAG_INIT;
     if (enabled && !reported.test_and_set()) {
         Report("at device lost", where);
+    }
+    // bbport: the fault sites gathered since the last frame stats window, which a device lost
+    // within it would lose (e.g. a burst of read faults on the GPU thread right before it).
+    static std::atomic_flag sites = ATOMIC_FLAG_INIT;
+    if (!sites.test_and_set()) {
+        VideoCore::PageManager::ReportFaultSites();
+        std::fflush(stdout);
     }
     // bbport: the driver's own account (VK_EXT_device_fault): the faulting addresses and the
     // vendor's codes, once.
@@ -321,6 +335,8 @@ void ReportStuck(const char* where) {
     static std::atomic_flag reported = ATOMIC_FLAG_INIT;
     if (enabled && !reported.test_and_set()) {
         Report("while the GPU makes no progress", where);
+        VideoCore::PageManager::ReportFaultSites();
+        std::fflush(stdout);
     }
 }
 
@@ -426,7 +442,7 @@ void PrintProgress() {
     std::array<Largest, 3> largest{};
     for (u32 slot = 0; slot < ArgSlots; ++slot) {
         const ArgsNote note = args_notes[slot];
-        if (note.id == 0 || note.stream >= count || note.id > finished[note.stream]) {
+        if (note.id == 0 || note.draw || note.stream >= count || note.id > finished[note.stream]) {
             continue;
         }
         const u32 x = args[slot * 4], y = args[slot * 4 + 1], z = args[slot * 4 + 2];

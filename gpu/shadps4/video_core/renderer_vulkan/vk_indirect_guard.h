@@ -7,8 +7,15 @@
 // timeout, was reset: device lost, the game gone. Bloodborne's real counts are at most a few
 // hundred. Before each indirect dispatch a one-thread shader (indirect_guard.comp) copies the
 // counts to a slot of our own, zero if they are implausible (past the device's limits or
-// BB_INDIRECT_GUARD_MAX groups in all, default 4M), and the dispatch reads that slot. Skipped
+// BB_INDIRECT_GUARD_MAX groups in all, default 64K), and the dispatch reads that slot. Skipped
 // dispatches are counted and reported. BB_INDIRECT_GUARD=0: the game's counts as they are.
+//
+// Indirect draws the same way: in a Chalice Dungeon boss fight one indirect draw (a vertex shader
+// without loops, at most one draw) kept the GPU busy for good without a reset, the game frozen:
+// a count no real draw has. A vertex or index count times instances past BB_INDIRECT_DRAW_MAX
+// (default 1M) draws nothing, and is counted and reported too. Garbage below a looser limit
+// (16M: half a million particles at random places) still ran at 1 FPS for seconds; the largest
+// counts that ran are reported to set the limits by.
 #pragma once
 
 #include <atomic>
@@ -39,22 +46,32 @@ public:
     /// the buffer and offset to dispatch from.
     std::pair<vk::Buffer, u64> CheckArgs(const VideoCore::Buffer& args, u64 offset);
 
+    /// The same for one indirect draw's arguments (`words` dwords: 4, or 5 indexed).
+    std::pair<vk::Buffer, u64> CheckDrawArgs(const VideoCore::Buffer& args, u64 offset, u32 words);
+
 private:
     static constexpr u32 NumSlots = 1024;
+    static constexpr u32 SlotSize = 32; ///< bytes: a dispatch's 3 dwords or a draw's 4-5
 
+    std::pair<vk::Buffer, u64> Guard(const VideoCore::Buffer& args, u64 offset, u32 words,
+                                     bool draw);
     void Report();
 
     const Instance& instance;
     Scheduler& scheduler;
-    std::unique_ptr<VideoCore::Buffer> checked; ///< NumSlots x 16 bytes of group counts
+    std::unique_ptr<VideoCore::Buffer> checked; ///< NumSlots x SlotSize bytes of arguments
     std::unique_ptr<VideoCore::Buffer> skipped; ///< count and the last skipped counts (host)
     vk::UniqueDescriptorSetLayout set_layout;
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniquePipeline pipeline;
     u32 max_count[3]{};
     u32 max_total = 0;
+    u32 max_draw_total = 0;
     std::atomic<u32> next_slot{0};
     std::atomic<u32> reported{0};
+    std::atomic<u32> reported_draws{0};
+    std::atomic<u32> reported_largest{0};
+    std::atomic<u32> reported_draw_largest{0};
     std::atomic<s64> last_report_ns{0};
 };
 

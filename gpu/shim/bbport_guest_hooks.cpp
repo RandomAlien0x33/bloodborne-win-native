@@ -428,11 +428,15 @@ void PatchImage(unsigned char*, std::uint64_t) {}
 // The BufferCache hands its callback over later (Install); allocations before that go unseen,
 // as on Linux, where the hooks go in at the same point.
 #include <windows.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 
 extern "C" void runtime_memory_note_write(uintptr_t address, uint64_t size);
 extern "C" void* runtime_low_map(size_t size, int prot);
@@ -701,7 +705,9 @@ bool GuardFrameNode(u8* image) {
 /// heap each frame. On 2026-10-18 it reached 0x3f2c0 bytes (258752 of 262144) at an area load:
 /// the frame's commands had been left out for minutes before (the guards), then the list itself
 /// did not fit and the game copied it to address 0 (its memcpy, guest+0x261af9e). The arena is
-/// made bigger (BB_FRAME_ARENA_KB, default 512; 256: the game's own size).
+/// made bigger (BB_FRAME_ARENA_KB, default 1024 as in deadinside28's 0.6 (PR #224); 256: the
+/// game's own size). The guards above stay: a frame that still fills it loses commands, not the
+/// game.
 constexpr std::array<u64, 2> FrameArenaSizeSites = {0x2195c09, 0x2195c46}; // mov edx, 0x40000
 constexpr u64 FrameArenaGlobal = 0x55406c8;
 constexpr u64 DrawListSizeSite = 0x2285d3b; // mov r12d, [r15 + 0x80]: the draw list's size
@@ -711,13 +717,14 @@ const u8* guest_image = nullptr;
 struct ArenaUse {
     u64 used = 0, size = 0;
 };
-/// The current frame's arena (its linear allocator at +8: begin, end, current), or zeros.
-ArenaUse CurrentFrameArena() {
+/// A frame's arena (its linear allocator at +8: begin, end, current), or zeros: the current
+/// frame's, or the other one: the previous frame, all it took (reset when its turn comes again).
+ArenaUse FrameArena(bool previous) {
     const u64 owner = *reinterpret_cast<const u64*>(guest_image + FrameArenaGlobal);
     if (owner == 0) {
         return {};
     }
-    const int index = *reinterpret_cast<const int*>(owner + 0x380);
+    const int index = *reinterpret_cast<const int*>(owner + 0x380) ^ (previous ? 1 : 0);
     const u64 arena = *reinterpret_cast<const u64*>(owner + 0x370 + 8 * u64(index & 1));
     if (arena == 0) {
         return {};
@@ -730,9 +737,100 @@ ArenaUse CurrentFrameArena() {
 
 std::atomic<std::uint32_t> draw_list_peak{0}, arena_peak{0};
 std::atomic<long long> draw_list_report_ms{0};
+std::atomic<std::uint32_t> kernel_samples_fixed{0}; // InstallKernelSampleClamp's stub counts here
+
+/// BB_FRAME_ARENA_TRACE=1 (diagnostics): what takes the frame arenas' memory. The arena class
+/// (vtable 0x52e6fc0) is a two-ended stack whose front is reset each frame; its allocation methods
+/// (0xe45350: size; 0xe453b0: size, alignment) are hooked, and the bytes taken from the two frame
+/// arenas are summed per calling site, reported each minute per frame. The frame's command heaps
+/// take their chunks there through 0xe45560 (a new chunk of max(chunk size, request) when the
+/// current one is full): for those, the site is 0xe45560's caller and the bytes its request.
+constexpr u64 CommandHeapChunkSite = 0xe455c2; // in 0xe45560, after the arena's allocation
+struct ArenaSite {
+    u64 bytes = 0, calls = 0, largest = 0;
+    u64 chain[3]{}; // for command heap chunks: three return addresses up from 0xe45560
+};
+std::mutex arena_sites_mutex;
+std::unordered_map<u64, ArenaSite> arena_sites;
+
+/// Return addresses up the guest's frame-pointer chain from `frame`, while they stay in the image.
+void WalkFrames(u64 frame, u64* out, int count) {
+    const u64 base = reinterpret_cast<u64>(guest_image);
+    for (int i = 0; i < count; ++i) {
+        MEMORY_BASIC_INFORMATION info{};
+        if (frame < 0x10000 || VirtualQuery(reinterpret_cast<const void*>(frame), &info,
+                                            sizeof(info)) == 0 ||
+            info.State != MEM_COMMIT || (info.Protect & (PAGE_READWRITE | PAGE_READONLY)) == 0) {
+            return;
+        }
+        const u64 ret = reinterpret_cast<const u64*>(frame)[1];
+        if (ret < base || ret - base > 0x6000000) {
+            return;
+        }
+        out[i] = ret - base;
+        frame = reinterpret_cast<const u64*>(frame)[0];
+    }
+}
+std::atomic<u64> arena_trace_frames{0};
+bool arena_trace = false;
+GUEST_ABI void ArenaAllocated(u64 arena, u64 size, u64 caller, u64 frame, u64 request) {
+    const u64 owner = *reinterpret_cast<const u64*>(guest_image + FrameArenaGlobal);
+    if (owner == 0 || (arena != *reinterpret_cast<const u64*>(owner + 0x370) &&
+                       arena != *reinterpret_cast<const u64*>(owner + 0x378))) {
+        return;
+    }
+    const u64 base = reinterpret_cast<u64>(guest_image);
+    u64 chain[3]{};
+    u64 key = caller - base;
+    if (key == CommandHeapChunkSite) {
+        WalkFrames(frame, chain, 3); // 0xe45560's caller and two more
+        key = chain[0] ^ (chain[1] << 21) ^ (chain[2] << 42);
+        size = request;
+    }
+    std::scoped_lock lock{arena_sites_mutex};
+    ArenaSite& site = arena_sites[key];
+    site.bytes += size;
+    ++site.calls;
+    site.largest = std::max(site.largest, size);
+    if (chain[0]) {
+        std::memcpy(site.chain, chain, sizeof(chain));
+    }
+}
+
+void ReportArenaSites() {
+    std::vector<std::pair<u64, ArenaSite>> sites;
+    {
+        std::scoped_lock lock{arena_sites_mutex};
+        sites.assign(arena_sites.begin(), arena_sites.end());
+        arena_sites.clear();
+    }
+    const u64 frames = std::max<u64>(arena_trace_frames.exchange(0), 1);
+    std::sort(sites.begin(), sites.end(),
+              [](const auto& a, const auto& b) { return a.second.bytes > b.second.bytes; });
+    std::printf("Frame arena trace (%llu frames):", (unsigned long long)frames);
+    for (size_t i = 0; i < sites.size() && i < 10; ++i) {
+        const auto& c = sites[i].second.chain;
+        if (c[0]) {
+            std::printf(" +%#llx<+%#llx<+%#llx", (unsigned long long)c[0], (unsigned long long)c[1],
+                        (unsigned long long)c[2]);
+        } else {
+            std::printf(" +%#llx", (unsigned long long)sites[i].first);
+        }
+        std::printf(" %.1f KiB/frame (%.1f calls, largest %.1f KiB);",
+                    double(sites[i].second.bytes) / 1024.0 / double(frames),
+                    double(sites[i].second.calls) / double(frames),
+                    double(sites[i].second.largest) / 1024.0);
+    }
+    std::printf("\n");
+}
+
 GUEST_ABI void DrawListSized(std::uint32_t list_bytes) {
     static std::atomic<bool> checked{false};
-    const ArenaUse arena = CurrentFrameArena();
+    arena_trace_frames.fetch_add(1, std::memory_order_relaxed);
+    // The list is copied right after this, early in the frame; the previous frame's arena shows
+    // what a whole frame took.
+    const ArenaUse arena = FrameArena(false);
+    const ArenaUse previous = FrameArena(true);
     if (!checked.exchange(true)) {
         std::printf("Guest hooks: frame render memory %llu KiB per frame (asked for %u KiB)%s\n",
                     (unsigned long long)(arena.size >> 10), frame_arena_bytes >> 10,
@@ -741,7 +839,7 @@ GUEST_ABI void DrawListSized(std::uint32_t list_bytes) {
     std::uint32_t seen = draw_list_peak.load(std::memory_order_relaxed);
     while (list_bytes > seen && !draw_list_peak.compare_exchange_weak(seen, list_bytes)) {
     }
-    const auto used = std::uint32_t(arena.used);
+    const auto used = std::uint32_t(previous.used);
     seen = arena_peak.load(std::memory_order_relaxed);
     while (used > seen && !arena_peak.compare_exchange_weak(seen, used)) {
     }
@@ -750,16 +848,22 @@ GUEST_ABI void DrawListSized(std::uint32_t list_bytes) {
     if (last == 0) {
         draw_list_report_ms.compare_exchange_strong(last, now);
     } else if (now - last >= 60000 && draw_list_report_ms.compare_exchange_strong(last, now)) {
-        std::printf("Guest hooks: frame render memory: draw list up to %u KiB, %u of %llu KiB in "
-                    "use when it was copied (largest of the minute)\n",
+        std::printf("Guest hooks: frame render memory: draw list up to %u KiB, a whole frame "
+                    "took up to %u of %llu KiB (largest of the minute)\n",
                     draw_list_peak.exchange(0) >> 10, arena_peak.exchange(0) >> 10,
                     (unsigned long long)(arena.size >> 10));
+        if (const std::uint32_t fixed = kernel_samples_fixed.load(std::memory_order_relaxed)) {
+            std::printf("Guest hooks: blur kernel sample counts corrected %u times so far\n", fixed);
+        }
+        if (arena_trace) {
+            ReportArenaSites();
+        }
     }
 }
 
 bool PatchFrameArena(u8* image) {
     const char* env = std::getenv("BB_FRAME_ARENA_KB");
-    const long kb = env && env[0] ? std::strtol(env, nullptr, 10) : 512;
+    const long kb = env && env[0] ? std::strtol(env, nullptr, 10) : 1024;
     if (kb <= 256 || kb > 65536) {
         return false;
     }
@@ -786,7 +890,8 @@ bool HookDrawListSize(u8* image) {
     e.Bytes({0x45, 0x8b, 0xa7, 0x80, 0x00, 0x00, 0x00});             // mov r12d, [r15 + 0x80]
     e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0xff, 0xff, 0xff});       // lea rsp, [rsp - 128]
     e.SaveVolatile();
-    e.Bytes({0x44, 0x89, 0xe7});                                     // mov edi, r12d
+    // SaveVolatile keeps the stack pointer in r12; the game's r12 (the size) is saved at [r12].
+    e.Bytes({0x41, 0x8b, 0x3c, 0x24});                               // mov edi, [r12]
     e.CallAbs(reinterpret_cast<const void*>(&DrawListSized));
     e.RestoreVolatile();
     e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0x00, 0x00, 0x00});       // lea rsp, [rsp + 128]
@@ -795,6 +900,88 @@ bool HookDrawListSize(u8* image) {
     }
     site[5] = 0xcc; // never reached: the stub jumps back past them
     site[6] = 0xcc;
+    return true;
+}
+
+/// Yebis's blur-kernel sample parameters (GPUTexUtil_GetRecursiveSampleParameters, 0xbbc3e0;
+/// deadinside28's 0.6, #207): the game asserts (GPUMath.cpp 3199-3216, compiled into the retail
+/// code: a crash, guest debug exception 0xa0020007) that the base sample count (edi) is at least
+/// 3, odd in mode 1 (esi) and even and at least 4 in mode 2. Game data now and then gives 2. The
+/// count is made valid at the entry, the nearest larger valid one (deadinside28 raises it to 3 in
+/// every mode, which mode 2 rejects too). Corrections are counted. BB_KERNEL_CLAMP=0: off.
+/// The community's FPS patches (Kyo's "FPS++", all of them) turn the first check's jg into a jmp
+/// (0xbbc40f): at high frame rates the count does come out below 3. The other four checks stay.
+bool InstallKernelSampleClamp(u8* image) {
+    if (const char* env = std::getenv("BB_KERNEL_CLAMP"); env && env[0] == '0') {
+        return false;
+    }
+    u8* site = image + 0xbbc3e0;
+    static constexpr u8 Entry[6] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57}; // push rbp; mov rbp, rsp; push r15
+    static constexpr u8 Check[4] = {0x41, 0x83, 0xfc, 0x02}; // +0x2b: cmp r12d, 2; then jg (or jmp)
+    if (std::memcmp(site, Entry, sizeof(Entry)) != 0 ||
+        std::memcmp(site + 0x2b, Check, sizeof(Check)) != 0 ||
+        (site[0x2f] != 0x7f && site[0x2f] != 0xeb) || site[0x30] != 0x1d) {
+        return false;
+    }
+    Emitter e;
+    e.Bytes({0x50});                         // push rax (flags are free at a call)
+    e.Bytes({0x89, 0xf8});                   // mov eax, edi (to tell a change)
+    e.Bytes({0x83, 0xfe, 0x02});             // cmp esi, 2
+    e.Bytes({0x74, 0x14});                   // je mode2
+    e.Bytes({0x83, 0xff, 0x03});             // cmp edi, 3
+    e.Bytes({0x7d, 0x05});                   // jge odd
+    e.Bytes({0xbf, 0x03, 0x00, 0x00, 0x00}); // mov edi, 3
+    e.Bytes({0x83, 0xfe, 0x01});             // odd: cmp esi, 1
+    e.Bytes({0x75, 0x15});                   // jne done
+    e.Bytes({0x83, 0xcf, 0x01});             // or edi, 1
+    e.Bytes({0xeb, 0x10});                   // jmp done
+    e.Bytes({0x83, 0xff, 0x04});             // mode2: cmp edi, 4
+    e.Bytes({0x7d, 0x05});                   // jge even
+    e.Bytes({0xbf, 0x04, 0x00, 0x00, 0x00}); // mov edi, 4
+    e.Bytes({0x83, 0xc7, 0x01});             // even: add edi, 1
+    e.Bytes({0x83, 0xe7, 0xfe});             // and edi, -2 (an odd count rounded up)
+    e.Bytes({0x39, 0xf8});                   // done: cmp eax, edi
+    e.Bytes({0x74, 0x0d});                   // je same
+    e.Bytes({0x48, 0xb8});                   // movabs rax, &kernel_samples_fixed
+    e.U64(reinterpret_cast<u64>(&kernel_samples_fixed));
+    e.Bytes({0xf0, 0xff, 0x00});             // lock inc dword [rax]
+    e.Bytes({0x58});                         // same: pop rax
+    for (const u8 b : Entry) {
+        e.Bytes({b});                        // the instructions the jump covers
+    }
+    if (!WriteJump(site, 0xe9, PlaceStub(e, reinterpret_cast<u64>(site) + sizeof(Entry)))) {
+        return false;
+    }
+    site[5] = 0xcc; // never reached: the stub jumps back past it
+    return true;
+}
+
+/// The arena allocation methods' entry (push rbp; mov rbp, rsp; push r15): ArenaAllocated(this,
+/// size, caller) first.
+bool HookArenaAlloc(u8* image, u64 offset) {
+    u8* site = image + offset;
+    static constexpr u8 Entry[6] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
+    if (std::memcmp(site, Entry, sizeof(Entry)) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.SaveVolatile();
+    // Saved below r12's own slot: r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax; then the return address.
+    e.Bytes({0x49, 0x8b, 0x7c, 0x24, 0x28}); // mov rdi, [r12 + 0x28] (this)
+    e.Bytes({0x49, 0x8b, 0x74, 0x24, 0x30}); // mov rsi, [r12 + 0x30] (size)
+    e.Bytes({0x49, 0x8b, 0x54, 0x24, 0x50}); // mov rdx, [r12 + 0x50] (the caller)
+    // Called from 0xe45560: its frame (rbp) and request (r14) are still live (read only then).
+    e.Bytes({0x48, 0x89, 0xe9});             // mov rcx, rbp
+    e.Bytes({0x4d, 0x89, 0xf0});             // mov r8, r14 (its request)
+    e.CallAbs(reinterpret_cast<const void*>(&ArenaAllocated));
+    e.RestoreVolatile();
+    for (const u8 b : Entry) {
+        e.Bytes({b});
+    }
+    if (!WriteJump(site, 0xe9, PlaceStub(e, reinterpret_cast<u64>(site) + sizeof(Entry)))) {
+        return false;
+    }
+    site[5] = 0xcc;
     return true;
 }
 
@@ -813,9 +1000,7 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     const bool gx_guard = !(gx_env && gx_env[0] == '0');
     const char* arena_env = std::getenv("BB_FRAME_ARENA_KB");
     const bool arena_wanted = !(arena_env && arena_env[0] == '0');
-    if (!memory_hooks && !gx_guard && !arena_wanted) {
-        return;
-    }
+    // The blur kernel's sample counts are always made valid (BB_KERNEL_CLAMP=0 inside: off).
     auto* p = static_cast<u8*>(runtime_low_map(StubPageSize, 3));
     const u64 base = reinterpret_cast<u64>(image), at = reinterpret_cast<u64>(p);
     if (!p || (at > base ? at - base : base - at) >= (2000ull << 20)) {
@@ -842,6 +1027,11 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     guest_image = image;
     const bool arena_in = arena_wanted && PatchFrameArena(image);
     const bool list_in = arena_wanted && HookDrawListSize(image);
+    const bool clamp_in = InstallKernelSampleClamp(image);
+    if (const char* env = std::getenv("BB_FRAME_ARENA_TRACE"); env && env[0] == '1' && list_in) {
+        arena_trace = HookArenaAlloc(image, 0xe45350) && HookArenaAlloc(image, 0xe453b0);
+        std::printf("Guest hooks: frame arena trace %s\n", arena_trace ? "on" : "NOT installed");
+    }
     DWORD old = 0;
     VirtualProtect(stub_page, StubPageSize, PAGE_EXECUTE_READ, &old);
     FlushInstructionCache(GetCurrentProcess(), stub_page, StubPageSize);
@@ -862,6 +1052,8 @@ void PatchImage(unsigned char* image, std::uint64_t) {
                     arena_in ? "made bigger" : "left as it is (other code there or 256)",
                     list_in ? "watched" : "not watched (other code there)");
     }
+    std::printf("Guest hooks: blur kernel sample counts %s (BB_KERNEL_CLAMP=0: off)\n",
+                clamp_in ? "made valid" : "left as they are (off or other code there)");
 }
 
 void Install(RangeCallback on_gpu_range_allocated) {

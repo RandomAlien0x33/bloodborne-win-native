@@ -989,9 +989,11 @@ void Scheduler::SubmitExecution(SubmitInfo& info) {
     const vk::Semaphore timeline = work_semaphore.Handle();
     info.AddSignal(timeline, signal_value);
 
+    // bbport (deadinside28, 0.6): the second wait is the presenter's prepared frame, which the
+    // presentation reads with a transfer blit: every stage waits, not only colour output.
     static constexpr std::array<vk::PipelineStageFlags, 2> wait_stage_masks = {
         vk::PipelineStageFlagBits::eAllCommands,
-        vk::PipelineStageFlagBits::eColorAttachmentOutput,
+        vk::PipelineStageFlagBits::eAllCommands,
     };
 
     const vk::TimelineSemaphoreSubmitInfo timeline_si = {
@@ -1072,7 +1074,7 @@ void Scheduler::SubmitAsync(SubmitInfo& info) {
         recorded_submissions.fetch_add(1, std::memory_order_relaxed);
         static constexpr std::array<vk::PipelineStageFlags, 4> wait_stage_masks = {
             vk::PipelineStageFlagBits::eAllCommands,
-            vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eAllCommands, // the prepared frame: read by a blit
             vk::PipelineStageFlagBits::eAllCommands,
             vk::PipelineStageFlagBits::eAllCommands,
         };
