@@ -97,9 +97,12 @@ std::mutex prompt_mutex;
 std::atomic<bool> prompt_active{false};
 std::string prompt_title, prompt_text;
 
-// Present rate for the FPS counter.
-std::chrono::steady_clock::time_point last_present{};
-float frame_ms_avg = 0.0f;
+// Present rate for the FPS counter: frames presented over the last half second, shown until
+// the next (a per-frame average flickered with presents paced on vblank ticks).
+std::chrono::steady_clock::time_point fps_window_start{};
+int fps_window_frames = 0;
+float fps_shown = 0.0f;
+std::chrono::steady_clock::time_point last_present{}; ///< ImGui's frame time
 
 float PixelDensity(SDL_WindowID id);
 
@@ -475,6 +478,15 @@ void DisplayTab() {
              "в размере пресета, смена — через перезапуск. Авто включает её на мощных дискретных "
              "видеокартах. Применяется после перезапуска игры."),
            true, [&](int i) { Store(s.live_resolution, i - 1, true); });
+    const char* rates[BbSettings::FrameRateCount];
+    for (int f = 0; f < BbSettings::FrameRateCount; ++f) {
+        rates[f] = T(BbSettings::FrameRates[f].label, BbSettings::FrameRates[f].label_ru);
+    }
+    Choice("frame_rate", T("Frame rate", "Частота кадров"),
+           std::clamp(s.frame_rate.load(), 0, BbSettings::FrameRateCount - 1),
+           BbSettings::FrameRateCount, [&](int i) { return rates[i]; }, [](int) { return true; },
+           T("If a scene freezes, choose 30 (F3).", "Если сцена зависает, выберите 30 (F3)."),
+           true, [&](int i) { Store(s.frame_rate, i, true); });
     Toggle("fps", T("FPS counter", "Счётчик FPS"), s.show_fps,
            T("Frames per second and frame time in the top right corner.",
              "Кадры в секунду и время кадра в правом верхнем углу."));
@@ -1061,7 +1073,7 @@ void FpsCounter() {
                      ImGuiWindowFlags_NoFocusOnAppearing);
     const auto& s = BbSettings::Get();
     // bbport: short and always in English (the owner's choice); no frame time.
-    ImGui::Text("%.0f FPS  %s", frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f,
+    ImGui::Text("%.0f FPS  %s", fps_shown,
                 s.upscaler == BbSettings::UpscalerFsr3     ? "FSR 3.1"
                 : s.upscaler == BbSettings::UpscalerFsr4   ? "FSR 4"
                 : s.upscaler == BbSettings::UpscalerFsr411 ? "FSR 4.1.1"
@@ -1408,12 +1420,16 @@ bool CapturesInput() {
 
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
 
-    // Present interval for the FPS readout (measured also while nothing is drawn).
+    // Presents for the FPS readout (counted also while nothing is drawn).
     const auto now = std::chrono::steady_clock::now();
     const float ms = std::chrono::duration<float, std::milli>(now - last_present).count();
     last_present = now;
-    if (ms > 0.0f && ms < 1000.0f) {
-        frame_ms_avg = frame_ms_avg == 0.0f ? ms : frame_ms_avg * 0.95f + ms * 0.05f;
+    ++fps_window_frames;
+    if (const float seconds = std::chrono::duration<float>(now - fps_window_start).count();
+        seconds >= 0.5f) {
+        fps_shown = seconds < 5.0f ? float(fps_window_frames) / seconds : 0.0f;
+        fps_window_start = now;
+        fps_window_frames = 0;
     }
     if (std::getenv("BB_MENU_KEYS_FILE") && initialized) {
         std::scoped_lock lock{imgui_mutex};

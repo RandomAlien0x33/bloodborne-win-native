@@ -83,7 +83,7 @@ translated to Vulkan.
 ## Features
 
 - **Upscaling:** NVIDIA DLSS (RTX cards), AMD FSR 3.1 and FSR 4, TAA; output up to 4K.
-- **Frame rate:** unlocked, 60 or 90 FPS (community patches).
+- **Frame rate:** 30 to 144 FPS or unlimited, changed in the menu while you play.
 - **Settings in the game's own System menu** (Display, Game effects, Additional) and in the
   port's menu (**Insert** or L3+R3).
 - **Mouse and keyboard:** the mouse turns the camera directly, as in PC games.
@@ -127,6 +127,7 @@ not part of this repository).
 | Z / C | L3 / R3 |
 | I / K / J / L | d-pad |
 | Enter / Tab | Options / touchpad |
+| F3 | 30 FPS on and off |
 | F5 / F8 | save a copy / load the newest copy (press twice) |
 | F11 | fullscreen |
 | **Insert** (gamepad: **L3 + R3** together) | **the port's menu** |
@@ -185,8 +186,8 @@ Case does not matter. A line replaces all default keys and mouse buttons of that
   `Keypad /`, `Keypad .`
 - symbols `` ` `` `-` `=` `[` `]` `;` `'` `.` `/` `\`
 
-The comma can't be bound: it separates keys in a line. Better leave the port's keys (F5, F8,
-F11, Insert, Left Alt) free: they keep doing their own thing.
+The comma can't be bound: it separates keys in a line. Better leave the port's keys (F3, F5,
+F8, F11, Insert, Left Alt) free: they keep doing their own thing.
 
 **Gamepad:** the same with `pad.` instead of `key.`. The right side names the button's place on
 the gamepad, Xbox style:

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "bbport_frame_rate.h"
 #include "common/assert.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
@@ -140,7 +141,9 @@ s32 PS4_SYSV_ABI sceVideoOutRegisterBuffers(s32 handle, s32 startIndex, void* co
 
 s32 PS4_SYSV_ABI sceVideoOutSetFlipRate(s32 handle, s32 rate) {
     LOG_TRACE(Lib_VideoOut, "called");
-    driver->GetPort(handle)->flip_rate = rate;
+    // bbport: with the game's frame rate set free (bbport_frame_rate) a frame is shown as soon as
+    // it comes; the game asks for every second vblank (30 FPS).
+    driver->GetPort(handle)->flip_rate = BbFrameRate::Unlocked() ? 0 : rate;
     return ORBIS_OK;
 }
 

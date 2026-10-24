@@ -516,9 +516,15 @@ def main():
             for key in ('BB_RENDER_RES', 'BB_OUTPUT_RES', 'BB_AUTO_RENDER_RES'):
                 os.environ.pop(key, None)
         # BB_RENDER_RES=WxH explicitly sets the game's render resolution (a patch at start).
-        # Frame rate: BB_FPS=uncap (default; delta-time patch, vblank follows the display),
-        # 60/90 (fixed-timestep patches) or 30 (unpatched). BB_PATCHES adds patch names ("a;b").
-        fps = env('BB_FPS', 'uncap')
+        # Frame rate: hooks in the game's code (gpu/shim/bbport_frame_rate.cpp; the limit is
+        # bbport.ini fps, the menus' "Frame rate", changed at once): no frame rate patches, frames
+        # shown as they come. BB_FRAME_HOOKS=0: the community's patches instead, BB_FPS=uncap
+        # (delta-time patch), 60/90/120 (fixed-timestep patches) or 30 (unpatched).
+        # BB_PATCHES adds patch names ("a;b").
+        hooks = env('BB_FRAME_HOOKS') != '0'
+        fps = '30' if hooks else env('BB_FPS', 'uncap')
+        if hooks and not env('BB_VBLANK_HZ'):
+            os.environ['BB_VBLANK_HZ'] = '480'
         # bbport.ini output_res other than 1080p (720p for the Steam Deck, 1440p, 2160p): the whole
         # game renders at the preset's size of the output (a patch), the upscaler fills the output,
         # the UI is drawn at the output size. Preset and output changes need a restart.
@@ -562,7 +568,7 @@ def main():
              '--patches-dir', env('BB_PATCHES_DIR', os.path.join(data, 'patches')),
              '--patches-config', env('BB_PATCHES_CONFIG', os.path.join(data, 'patches.json'))])
         if not env('BB_VBLANK_HZ'):
-            os.environ['BB_VBLANK_HZ'] = {'uncap': '480', '90': '90'}.get(fps, '60')
+            os.environ['BB_VBLANK_HZ'] = {'uncap': '480', '90': '90', '120': '120'}.get(fps, '60')
         # Defaults of upstream 0.3/0.4 (their run.sh), kept in step here:
         # BB_AS_0_3=1 (launcher: "Synchronisation as in 0.3") reverts what changed after 0.3 for
         # comparisons: the 0.3 memory model, WRITE_DATA/DMA waiting for every host copy, the

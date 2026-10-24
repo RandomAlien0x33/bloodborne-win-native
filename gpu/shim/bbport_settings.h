@@ -101,6 +101,22 @@ inline constexpr MemoryModelInfo MemoryModels[MemoryModelCount] = {
     {"direct", "Integrated GPU", "Встроенная графика"},
 };
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
+/// bbport.ini fps: the frame rate limit (bbport_frame_rate), applied at once.
+enum FrameRate : int { Fps30 = 0, Fps60, Fps90, Fps120, Fps144, FpsUnlimited, FrameRateCount };
+struct FrameRateInfo {
+    const char* key; ///< bbport.ini fps
+    int rate;        ///< frames per second; 0: as many as the game allows
+    const char* label;
+    const char* label_ru;
+};
+inline constexpr FrameRateInfo FrameRates[FrameRateCount] = {
+    {"30", 30, "30 (as on PS4)", "30 (как на PS4)"},
+    {"60", 60, "60", "60"},
+    {"90", 90, "90", "90"},
+    {"120", 120, "120", "120"},
+    {"144", 144, "144", "144"},
+    {"uncap", 0, "Unlimited", "Без ограничения"},
+};
 
 struct Values {
     std::atomic<MenuLanguage> menu_language{MenuLanguage::Game};
@@ -140,6 +156,7 @@ struct Values {
     std::atomic<bool> cheats[CheatCount]{};
     std::atomic<int> model_lod{0}; ///< -2 highest .. 2 lowest, 0 the game's
     std::atomic<int> memory_model{MemoryClassic}; ///< MemoryModel, on restart
+    std::atomic<int> frame_rate{Fps120};           ///< FrameRate, at once
     std::atomic<int> output_res{OutputDefault}; ///< index into OutputWidths
     /// Borderless fullscreen window at the desktop size (F11 toggles; BB_FULLSCREEN overrides).
     std::atomic<bool> fullscreen{false};

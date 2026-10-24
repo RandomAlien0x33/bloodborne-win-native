@@ -90,6 +90,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         for (int m = 0; m < MemoryModelCount; ++m) {
             if (value == MemoryModels[m].key) v.memory_model = m;
         }
+    } else if (key == "fps") {
+        for (int f = 0; f < FrameRateCount; ++f) {
+            if (value == FrameRates[f].key) v.frame_rate = f;
+        }
     } else if (key == "fullscreen") {
         v.fullscreen = i != 0;
     } else if (key == "live_resolution") {
@@ -295,6 +299,7 @@ void Save() {
     }
     put("model_lod", std::to_string(v.model_lod.load()));
     put("memory_model", MemoryModels[std::clamp(v.memory_model.load(), 0, MemoryModelCount - 1)].key);
+    put("fps", FrameRates[std::clamp(v.frame_rate.load(), 0, FrameRateCount - 1)].key);
     put("output_res", std::to_string(OutputWidths[v.output_res]) + "x" +
                           std::to_string(OutputHeights[v.output_res]));
     put("fullscreen", std::to_string(int(v.fullscreen.load())));

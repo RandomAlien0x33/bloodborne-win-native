@@ -440,6 +440,7 @@ void PatchImage(unsigned char*, std::uint64_t) {}
 
 extern "C" void runtime_memory_note_write(uintptr_t address, uint64_t size);
 extern "C" void* runtime_low_map(size_t size, int prot);
+extern "C" int runtime_extra_direct_map(uint64_t size, uint64_t alignment, void** out);
 
 namespace BbGuestHooks {
 namespace {
@@ -985,6 +986,142 @@ bool HookArenaAlloc(u8* image, u64 offset) {
     return true;
 }
 
+/// The render job pool: six slots, taken at 0x1056920 (sleeping until one is free) and given back
+/// at 0x1056990, both only by the job runner's step at 0x1067f60: take a slot, check the job's
+/// resource, run it, give the slot back. Its two error exits (the resource is not in the state
+/// asked for; the run fails) leave through 0x1068092 returning 1 with the slot still held in
+/// [runner + 0x120]: each failed job lost a slot for good, and after six every thread that needs
+/// one slept for ever (the main thread and Havok's workers in Laurence's cinematic above 30 FPS).
+/// The exits, and a runner reset with a job in the middle, now give the slot back.
+/// BB_JOB_SLOT_FIX=0: as the game has it.
+constexpr u64 JobGiveBack = 0x1056990;
+constexpr u64 JobPool = 0x54b8788; ///< the pool 0x1057350 returns
+std::atomic<u64> job_slots_released{0};
+
+void NoteSlotReleased(const char* how) {
+    const u64 n = job_slots_released.fetch_add(1) + 1;
+    if (n <= 5 || (n & (n - 1)) == 0) {
+        std::printf("Guest hooks: a render job %s gave its slot back (%llu so far)\n", how,
+                    static_cast<unsigned long long>(n));
+    }
+}
+
+GUEST_ABI void JobSlotFix(u64 runner, u64 pool, std::uint32_t result) {
+    u64& held = *reinterpret_cast<u64*>(runner + 0x120);
+    if (result != 1 || !held) {
+        return;
+    }
+    using GiveBack = GUEST_ABI void (*)(u64 pool, u64 item);
+    reinterpret_cast<GiveBack>(reinterpret_cast<u64>(guest_image) + JobGiveBack)(pool, held);
+    held = 0;
+    NoteSlotReleased("that failed");
+}
+
+GUEST_ABI void JobSlotDrop(u64 runner) {
+    u64& held = *reinterpret_cast<u64*>(runner + 0x120);
+    const u64 pool = *reinterpret_cast<const u64*>(guest_image + JobPool);
+    if (!held || !pool) {
+        return;
+    }
+    using GiveBack = GUEST_ABI void (*)(u64 pool, u64 item);
+    reinterpret_cast<GiveBack>(reinterpret_cast<u64>(guest_image) + JobGiveBack)(pool, held);
+    held = 0;
+    NoteSlotReleased("reset in the middle");
+}
+
+/// A stub at `offset` over the `code` there: the handler with the saved registers, then that code.
+/// `args` loads the handler's arguments (after SaveVolatile: the game's r12 is at [r12]);
+/// `returns_rax`: the handler's result replaces the game's rax.
+template <std::size_t N>
+bool HookWithHandler(u8* image, u64 offset, const std::array<u8, N>& code,
+                     std::initializer_list<u8> args, const void* handler,
+                     bool returns_rax = false) {
+    u8* site = image + offset;
+    if (std::memcmp(site, code.data(), N) != 0) {
+        return false;
+    }
+    Emitter e;
+    e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0xff, 0xff, 0xff}); // lea rsp, [rsp - 128] (red zone)
+    e.SaveVolatile();
+    e.Bytes(args);
+    e.CallAbs(handler);
+    if (returns_rax) {
+        e.Bytes({0x49, 0x89, 0x44, 0x24, 0x48}); // mov [r12 + 0x48], rax (the saved rax)
+    }
+    e.RestoreVolatile();
+    e.Bytes({0x48, 0x8d, 0xa4, 0x24, 0x80, 0x00, 0x00, 0x00}); // lea rsp, [rsp + 128]
+    for (const u8 b : code) {
+        e.Bytes({b});
+    }
+    if (!WriteJump(site, 0xe9, PlaceStub(e, reinterpret_cast<u64>(site) + N))) {
+        return false;
+    }
+    for (std::size_t i = 5; i < N; ++i) {
+        site[i] = 0xcc; // never reached: the stub jumps back past them
+    }
+    return true;
+}
+
+bool InstallJobSlotFix(u8* image) {
+    if (const char* env = std::getenv("BB_JOB_SLOT_FIX"); env && env[0] == '0') {
+        return false;
+    }
+    // mov rax, [rbx]; cmp rax, [rbp - 0x30]: the stack check every exit of the step ends in.
+    constexpr std::array<u8, 7> exit_code{0x48, 0x8b, 0x03, 0x48, 0x3b, 0x45, 0xd0};
+    // mov qword [rbx + 0x120], 0: the runner reset.
+    constexpr std::array<u8, 11> reset_code{0x48, 0xc7, 0x83, 0x20, 0x01, 0x00,
+                                            0x00, 0x00, 0x00, 0x00, 0x00};
+    const bool exit_in = HookWithHandler(image, 0x1068092, exit_code,
+                                         {0x4c, 0x89, 0xf7,        // mov rdi, r14 (the runner)
+                                          0x49, 0x8b, 0x34, 0x24,  // mov rsi, [r12] (the pool)
+                                          0x44, 0x89, 0xfa},       // mov edx, r15d (the result)
+                                         reinterpret_cast<const void*>(&JobSlotFix));
+    const bool reset_in =
+        HookWithHandler(image, 0x106798a, reset_code, {0x48, 0x89, 0xdf}, // mov rdi, rbx
+                        reinterpret_cast<const void*>(&JobSlotDrop)) &&
+        HookWithHandler(image, 0x1067a5c, reset_code, {0x48, 0x89, 0xdf},
+                        reinterpret_cast<const void*>(&JobSlotDrop));
+    return exit_in && reset_in;
+}
+
+/// The render resource cache (its range heap of 160 MiB, allocated at 0x216b21a): at high frame
+/// rates it filled before Laurence's cinematic had its geometry, and the failed allocations made
+/// the jobs above fail. It gets 512 MiB of the port's direct memory past the game's instead
+/// (BB_RENDER_RESOURCE_CACHE_MB, 160..512; 160: the game's); the game's 160 MiB stays allocated,
+/// so the memory areas load into keep their size. Returns the backing to use (rax).
+GUEST_ABI u64 ResourceCacheBacking(u64 creation, u64 allocated) {
+    constexpr std::uint32_t native_bytes = 160u << 20;
+    std::uint32_t asked = 0;
+    std::memcpy(&asked, reinterpret_cast<const void*>(creation + 0x54), sizeof(asked));
+    static const std::uint32_t bytes = [] {
+        const char* env = std::getenv("BB_RENDER_RESOURCE_CACHE_MB");
+        const long mb = env ? std::strtol(env, nullptr, 10) : 512;
+        return std::uint32_t(std::clamp(mb, 160l, 512l)) << 20;
+    }();
+    if (asked != native_bytes || !allocated || bytes == native_bytes) {
+        return allocated;
+    }
+    void* block = nullptr;
+    if (const int error = runtime_extra_direct_map(bytes, 64ull << 10, &block); error || !block) {
+        std::printf("Render resource cache: no port memory for %u MiB (error %#x): the game's "
+                    "160 MiB\n", bytes >> 20, unsigned(error));
+        return allocated;
+    }
+    std::memcpy(reinterpret_cast<void*>(creation + 0x54), &bytes, sizeof(bytes));
+    std::printf("Render resource cache: %u MiB in the port's memory (the game's 160 MiB stays "
+                "allocated)\n", bytes >> 20);
+    return reinterpret_cast<u64>(block);
+}
+
+bool InstallResourceCacheSize(u8* image) {
+    // mov rcx, rbx; mov [rcx + 0x10], rax: right after the allocation returns (r14: the record).
+    constexpr std::array<u8, 7> code{0x48, 0x89, 0xd9, 0x48, 0x89, 0x41, 0x10};
+    return HookWithHandler(image, 0x216b21d, code,
+                           {0x4c, 0x89, 0xf7,  // mov rdi, r14
+                            0x48, 0x89, 0xc6}, // mov rsi, rax
+                           reinterpret_cast<const void*>(&ResourceCacheBacking), true);
+}
+
 bool Wanted() {
     // Only with the game's memory in place (the launcher sets BB_GUEST_IN_PLACE from the memory
     // model before the game starts); BB_GUEST_HOOKS=0 leaves the game's code alone.
@@ -1028,6 +1165,8 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     const bool arena_in = arena_wanted && PatchFrameArena(image);
     const bool list_in = arena_wanted && HookDrawListSize(image);
     const bool clamp_in = InstallKernelSampleClamp(image);
+    const bool slots_in = InstallJobSlotFix(image);
+    const bool cache_in = InstallResourceCacheSize(image);
     if (const char* env = std::getenv("BB_FRAME_ARENA_TRACE"); env && env[0] == '1' && list_in) {
         arena_trace = HookArenaAlloc(image, 0xe45350) && HookArenaAlloc(image, 0xe453b0);
         std::printf("Guest hooks: frame arena trace %s\n", arena_trace ? "on" : "NOT installed");
@@ -1054,6 +1193,9 @@ void PatchImage(unsigned char* image, std::uint64_t) {
     }
     std::printf("Guest hooks: blur kernel sample counts %s (BB_KERNEL_CLAMP=0: off)\n",
                 clamp_in ? "made valid" : "left as they are (off or other code there)");
+    std::printf("Guest hooks: failed render jobs %s, render resource cache %s\n",
+                slots_in ? "give their slot back" : "keep their slot (off or other code there)",
+                cache_in ? "watched" : "as the game has it (other code there)");
 }
 
 void Install(RangeCallback on_gpu_range_allocated) {

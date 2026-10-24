@@ -1,6 +1,7 @@
 #include "bbport_write_log.h"
 #include "bbport_cheats.h"
 #include "bbport_game_menu.h"
+#include "bbport_frame_rate.h"
 #include "bbport_mouse_camera.h"
 #include "bbport_gnm_hooks.h"
 // bbport: glue between the C loader and the vendored shadPS4 video core.
@@ -363,6 +364,7 @@ extern "C" void bbgpu_patch_image(unsigned char* image, uint64_t size) {
     BbCheats::PatchImage(image, size);
     BbMouseCamera::PatchImage(image, size);
     BbGuestHooks::PatchImage(image, size);
+    BbFrameRate::PatchImage(image, size);
 }
 
 extern "C" int bbgpu_mouse_take(float* dx, float* dy, uint32_t* buttons) {

@@ -184,7 +184,7 @@ const char16_t* TextOf(u32 id) {
 
 // ---- The port's values the game's rows edit (ints: the list rows bind ints). ----
 enum Field : int {
-    OutputRes, Upscaler, Preset, Sharpness, ShowFps,
+    OutputRes, Upscaler, Preset, Sharpness, FrameRate, ShowFps,
     ModelLod, Memory, MouseCamera, MouseSensitivity, MouseInvertY, FirstEffect,
     FirstCheat = FirstEffect + BbSettings::EffectCount, FieldCount = FirstCheat + BbSettings::CheatCount
 };
@@ -209,6 +209,7 @@ void Fill(const BbSettings::Values& s, int* values) {
     // One slider for both: 0 is sharpening off.
     values[Sharpness] =
         s.sharpen ? std::clamp(int(std::lround(s.sharpness / SharpnessStep)), 1, SharpnessSteps - 1) : 0;
+    values[FrameRate] = s.frame_rate;
     values[ShowFps] = s.show_fps;
     values[ModelLod] = 1;
     for (int i = 0; i < 4; ++i) {
@@ -293,6 +294,16 @@ void DefineTexts() {
          AddText("Performance", "Performance"), AddText("Ultra Performance", "Ultra Performance")});
     row(Sharpness, "Sharpness", "Резкость", "RCAS after the upscaler: 0 off, 10 strongest",
         "RCAS после апскейлера: 0 выкл, 10 сильнее всего", {}, Kind::Slider);
+    row(FrameRate, "Frame rate", "Частота кадров",
+        "If a scene freezes, choose 30 (F3)",
+        "Если сцена зависает, выберите 30 (F3)",
+        [] {
+            std::vector<u32> labels;
+            for (const auto& f : BbSettings::FrameRates) {
+                labels.push_back(AddText(f.label, f.label_ru));
+            }
+            return labels;
+        }());
     row(ShowFps, "FPS counter", "Счётчик FPS", "Frame rate in the top right corner",
         "Частота кадров в правом верхнем углу", toggle);
 
@@ -1215,6 +1226,7 @@ void Poll() {
     if (values[Sharpness] != 0) {
         s.sharpness = std::clamp(values[Sharpness], 0, SharpnessSteps - 1) * SharpnessStep;
     }
+    s.frame_rate = std::clamp(values[FrameRate], 0, BbSettings::FrameRateCount - 1);
     s.show_fps = values[ShowFps] != 0;
     s.model_lod = LodValues[std::clamp(values[ModelLod], 0, 3)];
     s.memory_model = std::clamp(values[Memory], 0, BbSettings::MemoryModelCount - 1);

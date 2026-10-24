@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -21,6 +22,18 @@
 namespace Vulkan {
 
 namespace {
+
+// bbport BB_CAMERA_FRAMES=1 (diagnostics): per 2 s, the display passes, the cameras committed for
+// them (and how many repeat the previous one), and the motion vector passes.
+struct FrameCounts {
+    u32 display = 0, committed = 0, unchanged = 0, motion = 0, no_camera = 0;
+    float largest_step = 0.0f; ///< the camera's largest move between committed frames
+};
+FrameCounts frame_counts;
+bool CameraFramesLog() {
+    static const bool enabled = std::getenv("BB_CAMERA_FRAMES") != nullptr;
+    return enabled;
+}
 
 struct PushConstants {
     std::array<float, 12> reproject;
@@ -219,6 +232,7 @@ vk::Image CameraMotion::ObjectMotionImage(u32 width, u32 height) const noexcept 
 void CameraMotion::RecordMotion(vk::ImageView depth_view, vk::ImageView motion_view, u32 width,
                                 u32 height) {
     CommitFrameCamera();
+    ++frame_counts.motion;
     bool object_valid = false;
     const vk::ImageView object_view = object_motion && object_motion->Enabled()
         ? object_motion->PrepareRead(width, height, object_valid) : depth_view;
@@ -369,10 +383,34 @@ void CameraMotion::CommitFrameCamera() {
     previous = current;
     current = pass_camera;
     committed = true;
+    ++frame_counts.committed;
+    if (current.view == previous.view) {
+        ++frame_counts.unchanged;
+    }
+    const float dx = current.inv_view[3] - previous.inv_view[3];
+    const float dy = current.inv_view[7] - previous.inv_view[7];
+    const float dz = current.inv_view[11] - previous.inv_view[11];
+    frame_counts.largest_step =
+        std::max(frame_counts.largest_step, std::sqrt(dx * dx + dy * dy + dz * dz));
 }
 
 void CameraMotion::OnDisplayPass(VideoCore::ImageId frame) {
     CommitFrameCamera();
+    ++frame_counts.display;
+    frame_counts.no_camera += frame_has_camera ? 0 : 1;
+    if (CameraFramesLog()) {
+        static auto next = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        if (const auto now = std::chrono::steady_clock::now(); now >= next) {
+            next = now + std::chrono::seconds(2);
+            const auto& c = frame_counts;
+            std::printf("Camera frames (2 s): %u display passes, %u without a camera, %u cameras "
+                        "committed (%u the same as the one before), %u motion vector passes; "
+                        "largest camera step %.3f\n",
+                        c.display, c.no_camera, c.committed, c.unchanged, c.motion,
+                        c.largest_step);
+            frame_counts = {};
+        }
+    }
     if (debug_overlay && frame && depth_id && current.valid && previous.valid) {
         Overlay(frame);
     }
