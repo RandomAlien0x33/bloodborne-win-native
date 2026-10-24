@@ -18,6 +18,7 @@
 #include "core/memory.h"
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/page_manager.h"
+#include "video_core/renderer_vulkan/vk_indirect_trace.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
@@ -191,6 +192,8 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
         download.Invalidate();
         BbFreeCheck::Check(image.info.guest_address, download_size, download.mapped,
                            BbFreeCheck::ImageDownload);
+        Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::ImageDownload,
+                                    image.info.guest_address, download_size);
         Core::Memory::Instance()->TryWriteBacking(std::bit_cast<u8*>(image.info.guest_address),
                                                   download.mapped, download_size);
         if (!WriteTracking()) {
@@ -202,6 +205,8 @@ void TextureCache::DownloadImageMemory(ImageId image_id, bool sync) {
                 download.Invalidate();
                 BbFreeCheck::Check(device_addr, download_size, download.mapped,
                                    BbFreeCheck::ImageDownload);
+                Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::ImageDownload,
+                                            device_addr, download_size);
                 Core::Memory::Instance()->TryWriteBacking(std::bit_cast<u8*>(device_addr),
                                                           download.mapped, download_size);
                 if (!WriteTracking()) {

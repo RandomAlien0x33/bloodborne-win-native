@@ -43,19 +43,21 @@ public:
     static bool Enabled();
 
     /// Records the check of the arguments at `offset` in `args` (outside a render pass); returns
-    /// the buffer and offset to dispatch from.
-    std::pair<vk::Buffer, u64> CheckArgs(const VideoCore::Buffer& args, u64 offset);
+    /// the buffer and offset to dispatch from. `seq`: the command's number (IndirectTrace).
+    std::pair<vk::Buffer, u64> CheckArgs(const VideoCore::Buffer& args, u64 offset, u32 seq);
 
     /// The same for one indirect draw's arguments (`words` dwords: 4, or 5 indexed).
-    std::pair<vk::Buffer, u64> CheckDrawArgs(const VideoCore::Buffer& args, u64 offset, u32 words);
+    std::pair<vk::Buffer, u64> CheckDrawArgs(const VideoCore::Buffer& args, u64 offset, u32 words,
+                                             u32 seq);
 
 private:
     static constexpr u32 NumSlots = 1024;
     static constexpr u32 SlotSize = 32; ///< bytes: a dispatch's 3 dwords or a draw's 4-5
 
     std::pair<vk::Buffer, u64> Guard(const VideoCore::Buffer& args, u64 offset, u32 words,
-                                     bool draw);
+                                     bool draw, u32 seq);
     void Report();
+    void ReportTrace(); ///< BB_INDIRECT_TRACE: the commands stopped since the last call
 
     const Instance& instance;
     Scheduler& scheduler;
@@ -73,6 +75,8 @@ private:
     std::atomic<u32> reported_largest{0};
     std::atomic<u32> reported_draw_largest{0};
     std::atomic<s64> last_report_ns{0};
+    std::atomic<s64> last_trace_ns{0};
+    u32 traced_rejects = 0;
 };
 
 } // namespace Vulkan

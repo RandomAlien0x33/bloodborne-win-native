@@ -16,14 +16,14 @@ static ABI int guest_gettimeofday(GuestTimeval *value,GuestTimezone *zone) {
     if (value) { value->seconds=(int64_t)(now/1000000000); value->microseconds=(int64_t)(now%1000000000/1000); }
     if (zone) { zone->minuteswest=(int32_t)(-runtime_utc_offset(time(NULL))/60); zone->dsttime=0; }
 #else
-    struct timeval t;
-    struct timezone z;
-    if (gettimeofday(&t,&z)) {
-        /* Guest errno/TLS failure path is not implemented yet. */
-        perror("STOP: host gettimeofday failed"); exit(21);
+    uint64_t now=host_realtime_ns(); /* never goes back (runtime_host.c) */
+    if (value) { value->seconds=(int64_t)(now/1000000000); value->microseconds=(int64_t)(now%1000000000/1000); }
+    if (zone) {
+        struct timeval t;
+        struct timezone z;
+        gettimeofday(&t,&z);
+        zone->minuteswest=z.tz_minuteswest; zone->dsttime=z.tz_dsttime;
     }
-    if (value) { value->seconds=t.tv_sec; value->microseconds=t.tv_usec; }
-    if (zone) { zone->minuteswest=z.tz_minuteswest; zone->dsttime=z.tz_dsttime; }
 #endif
     return 0;
 }

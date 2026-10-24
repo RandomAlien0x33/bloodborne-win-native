@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <chrono>
 #include <thread>
 #include "common/rdtsc.h"
 #include "common/uint128.h"
@@ -19,23 +20,11 @@ static u64 RoundToNearest(u64 value) {
     return mod >= (Nearest / 2) ? (value - mod + Nearest) : (value - mod);
 }
 
+// bbport: the steady clock: the system clock can step while the frequency is measured.
 static u64 GetTimeNs() {
-#ifdef _WIN64
-    // GetSystemTimePreciseAsFileTime returns the file time in 100ns units.
-    static constexpr u64 Multiplier = 100;
-    // Convert Windows epoch to Unix epoch.
-    static constexpr u64 WindowsEpochToUnixEpoch = 0x19DB1DED53E8000LL;
-    FILETIME filetime;
-    GetSystemTimePreciseAsFileTime(&filetime);
-    return Multiplier * ((static_cast<u64>(filetime.dwHighDateTime) << 32) +
-                         static_cast<u64>(filetime.dwLowDateTime) - WindowsEpochToUnixEpoch);
-#elif defined(__APPLE__)
-    return clock_gettime_nsec_np(CLOCK_REALTIME);
-#else
-    timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return ts.tv_sec * SecondToNanoseconds + ts.tv_nsec;
-#endif
+    return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count());
 }
 
 u64 EstimateRDTSCFrequency() {

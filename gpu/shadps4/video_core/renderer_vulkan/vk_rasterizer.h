@@ -94,7 +94,9 @@ public:
     /// now (otherwise the GPU writes it, in stream order).
     [[nodiscard]] bool DmaMayWriteOnCpu(VAddr dst, u32 num_bytes);
     u32 ReadDataFromGds(u32 gsd_offset);
-    bool InvalidateMemory(VAddr addr, u64 size, bool assume_locks = false);
+    /// `exact_write`: [addr, addr + size) is exactly what a guest store writes (OnWriteFault).
+    bool InvalidateMemory(VAddr addr, u64 size, bool assume_locks = false,
+                          bool exact_write = false);
     /// bbport: data written into GPU memory by a path we hear of (file reads, the game's resource
     /// loaders, DMA on the CPU): invalidated, and an asset for the buffer cache.
     void NoteAssetWrite(VAddr addr, u64 size);

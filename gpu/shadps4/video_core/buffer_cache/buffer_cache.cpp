@@ -27,6 +27,7 @@
 #include "video_core/buffer_cache/buffer_cache.h"
 #include "video_core/buffer_cache/memory_tracker.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
+#include "video_core/renderer_vulkan/vk_indirect_trace.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "video_core/renderer_vulkan/vk_runtime.h"
@@ -306,6 +307,18 @@ FastReadback& SharedReadback(const Vulkan::Instance& instance) {
 // bytes: larger outputs (vertices the CPU reads back, FaceGen) keep waiting for the GPU.
 // Not with BB_READBACKS=2: a twinned page stays GPU-modified (read-protected) while the guest may
 // write it, a write-only page the page manager cannot make (it stopped at the first cutscene).
+//
+// Twins find the guest's writes by value, and the game's copy never got the GPU's data: a guest
+// write of the value it already held (a counter zeroed when memory is reused) goes unseen and the
+// GPU's old bytes stay. The bytes of the faulting write itself are known: they are the guest's,
+// without a twin and no longer GPU-modified. BB_GPU_WRITE_TWINS_OVER_GPU=1: twinned as before.
+bool TwinsOverGpuBytes() {
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_GPU_WRITE_TWINS_OVER_GPU");
+        return env && env[0] == '1';
+    }();
+    return enabled;
+}
 bool TwinsEnabled() {
     static const bool enabled = [] {
         const char* env = std::getenv("BB_GPU_WRITE_TWINS");
@@ -323,7 +336,7 @@ u64 TwinsMaxBytes() {
 }
 std::mutex twins_mutex;
 std::map<VAddr, std::vector<u8>> twins; ///< start -> guest bytes when the twin was made
-std::atomic<u64> twin_faults{0}, twin_kept_bytes{0}, twin_guest_bytes{0};
+std::atomic<u64> twin_faults{0}, twin_kept_bytes{0}, twin_guest_bytes{0}, twin_refused{0};
 
 enum class TwinRun { None, Unchanged, Changed };
 
@@ -703,13 +716,17 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
 
 BufferCache::~BufferCache() = default;
 
-void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks) {
+void BufferCache::InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks,
+                                   bool exact_write) {
+    Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::GuestWrite, device_addr, size, 0,
+                                assume_locks ? 1 : 0);
     if (LayerMode()) {
         LayerNoteCpuWrite(device_addr, size);
     }
-    memory_tracker->InvalidateRegion(device_addr, size, [this, device_addr, size, assume_locks] {
-        ReadMemory(device_addr, size, true, assume_locks);
-    });
+    memory_tracker->InvalidateRegion(
+        device_addr, size, [this, device_addr, size, assume_locks, exact_write] {
+            ReadMemory(device_addr, size, true, assume_locks, exact_write);
+        });
 }
 
 // bbport: the game fills its per-frame buffers (constants, skinning output) sequentially and
@@ -758,10 +775,13 @@ void BufferCache::ExtendWriteFault(VAddr device_addr, u64 guest_rip) {
     if (window <= TRACKER_BYTES_PER_PAGE || BbToggle::Disabled(BbToggle::FaultWindow)) {
         return;
     }
+    Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::GuestWrite,
+                                Common::AlignDown(device_addr, window), window, 0, 2);
     memory_tracker->ExtendWriteFault(Common::AlignDown(device_addr, window), window);
 }
 
-void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks) {
+void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool assume_locks,
+                             bool exact_write) {
     BbStats::readbacks.fetch_add(1, std::memory_order_relaxed);
     std::array<char, 16> requester{};
     if (Readbacks()) {
@@ -772,7 +792,7 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
         pthread_getname_np(pthread_self(), requester.data(), requester.size());
 #endif
     }
-    const auto flush_request = [this, device_addr, size, is_write, requester] {
+    const auto flush_request = [this, device_addr, size, is_write, exact_write, requester] {
         readback_requester = requester.data();
         readback_is_write = is_write;
         const u32 first_block = device_addr >> block_shift;
@@ -793,11 +813,14 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
             const VAddr page_begin = Common::AlignDown(device_addr, TRACKER_BYTES_PER_PAGE);
             const VAddr page_end = Common::AlignUp(device_addr + size, TRACKER_BYTES_PER_PAGE);
             u64 tick = 0, gpu_bytes = 0;
+            bool over_gpu = false; // the faulting write itself lands on bytes the GPU wrote
             gpu_modified_ranges.ForEachInRange(page_begin, page_end - page_begin,
                                                [&](VAddr start, VAddr end) {
                                                    gpu_bytes += end - start;
                                                    tick = std::max(tick, WriteTicks().Newest(
                                                                              start, end - start));
+                                                   over_gpu |= start < device_addr + size &&
+                                                               device_addr < end;
                                                });
             if (gpu_bytes != 0 && gpu_bytes <= TwinsMaxBytes() && tick != 0 &&
                 !scheduler.IsFree(tick)) {
@@ -817,8 +840,17 @@ void BufferCache::ReadMemory(VAddr device_addr, u64 size, bool is_write, bool as
                                 }
                             });
                         });
+                    // The faulting store's own bytes are the guest's: no twin to compare them
+                    // with, and no GPU data to keep there.
+                    if (over_gpu && exact_write && !TwinsOverGpuBytes()) {
+                        EraseTwins(device_addr, device_addr + size);
+                        gpu_modified_ranges.Subtract(device_addr, size);
+                        twin_refused.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
                 memory_tracker->MarkRegionAsCpuModified(device_addr, size);
+                Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::Twin, page_begin,
+                                            page_end - page_begin, gpu_bytes);
                 twin_faults.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
@@ -972,6 +1004,7 @@ void BufferCache::DownloadMemory(const Buffer* arena, VAddr device_addr, u64 siz
     }
     const auto write_range = [&](VAddr guest, const u8* src, u64 bytes) {
         BbFreeCheck::Check(guest, bytes, src, BbFreeCheck::BufferDownload);
+        Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::Download, guest, bytes);
         memory->TryWriteBacking(std::bit_cast<u8*>(guest), src, bytes);
     };
     const auto write_back = [&](const u8* data, u64 data_offset) {
@@ -1995,6 +2028,7 @@ void BufferCache::EvictVramBlock(u64 block) {
         }
     }
     resident_ranges.Subtract(block, block + 1);
+    Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::Evict, address, block_size);
     memory_tracker->UnmarkRegionAsGpuModified(address, block_size);
     gpu_modified_ranges.Subtract(address, block_size);
     memory_tracker->MarkRegionAsCpuModified(address, block_size);
@@ -3456,6 +3490,16 @@ bool BufferCache::SynchronizeMemory(const Buffer* arena, VAddr device_addr, u32 
                 copies.assign(staged.begin(), staged.end());
                 total_size_bytes = staged_bytes;
             }
+            if (Vulkan::IndirectTrace::Enabled()) {
+                for (const auto& copy : copies) {
+                    Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::Upload,
+                                                copy.dstOffset, copy.size);
+                }
+                for (const auto& [chunk_buffer, copy] : chunk_copies) {
+                    Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::Upload,
+                                                arena->cpu_addr + copy.dstOffset, copy.size, 0, 1);
+                }
+            }
             src_buffer = UploadCopies(arena, copies, total_size_bytes);
         });
 
@@ -3638,6 +3682,8 @@ bool BufferCache::SynchronizeMemoryFromImage(const Buffer* arena, u64 arena_offs
         }
     }
     auto& tile_manager = texture_cache.GetTileManager();
+    Vulkan::IndirectTrace::Note(Vulkan::IndirectTrace::Event::ImageToBuffer, device_addr, size,
+                                image.info.guest_address);
     tile_manager.TileImage(image, buffer_copies, arena, arena_offset);
     DropShadows(device_addr, size);
     // A GPU write like any other: what the GPU copies there each frame (a render target read as a
@@ -3687,6 +3733,18 @@ void BufferCache::NotePreuploadMapping(VAddr addr, u64 size, bool mapped) {
     }
 }
 
+bool BufferCache::HasTwin(VAddr addr, u64 size) {
+    if (!TwinsEnabled()) {
+        return false;
+    }
+    std::scoped_lock lk{twins_mutex};
+    bool found = false;
+    ForEachTwinRun(addr, addr + size, [&](VAddr, VAddr, TwinRun run) {
+        found |= run != TwinRun::None;
+    });
+    return found;
+}
+
 void BufferCache::DropTwins(VAddr addr, u64 size) {
     if (TwinsEnabled()) {
         std::scoped_lock lk{twins_mutex};
@@ -3705,10 +3763,12 @@ void BufferCache::Preupload(u64 budget) {
     if (BbStats::enabled && BbStats::frame_number.load(std::memory_order_relaxed) - report_frame >= 600) {
         report_frame = BbStats::frame_number.load(std::memory_order_relaxed);
         std::printf("Pre-upload: %.1f MB first, %.1f MB again in 600 frames; GPU write twins: %llu "
-                    "writes without waiting, %.1f KB kept for the GPU, %.1f KB written by the game\n",
+                    "writes without waiting, %.1f KB kept for the GPU, %.1f KB written by the "
+                    "game, %llu guest stores over GPU bytes\n",
                     preupload_first_bytes / 1e6, preupload_again_bytes / 1e6,
                     (unsigned long long)twin_faults.exchange(0), twin_kept_bytes.exchange(0) / 1e3,
-                    twin_guest_bytes.exchange(0) / 1e3);
+                    twin_guest_bytes.exchange(0) / 1e3,
+                    (unsigned long long)twin_refused.exchange(0));
         preupload_first_bytes = preupload_again_bytes = 0;
     }
     // Regions written within these frames are left alone: the game is still filling them.

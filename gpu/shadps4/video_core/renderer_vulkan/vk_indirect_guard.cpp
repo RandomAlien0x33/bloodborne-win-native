@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_indirect_guard.h"
 
+#include <algorithm>
+
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -8,6 +10,7 @@
 
 #include "video_core/buffer_cache/buffer.h"
 #include "video_core/host_shaders/indirect_guard_comp.h"
+#include "video_core/renderer_vulkan/vk_indirect_trace.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
@@ -21,7 +24,16 @@ struct Push {
     u32 max_total;
     u32 slot;
     u32 draw;
+    u32 seq;          ///< IndirectTrace's number for the command
+    u32 around_first; ///< BB_INDIRECT_TRACE: the first dword kept around the arguments
+    u32 around_count; ///< and how many (0: the trace is off)
 };
+
+// BB_INDIRECT_TRACE: what the shader keeps of each command it stops (a ring).
+constexpr u32 NumRejects = 16;
+constexpr u32 AroundWords = 40;
+constexpr u32 RejectWords = 8 + AroundWords; ///< seq, sizes, 6 arguments, the dwords around
+constexpr u32 AroundBefore = 64;             ///< bytes kept before the arguments
 
 struct Skipped {
     u32 count;
@@ -32,6 +44,8 @@ struct Skipped {
     u32 draw_last[3];
     u32 largest;      ///< groups of the largest dispatch that ran
     u32 draw_largest; ///< vertices (indices) x instances of the largest draw that ran
+    u32 reject_head;  ///< BB_INDIRECT_TRACE: commands stopped, kept in `rejects`
+    u32 rejects[NumRejects * RejectWords];
 };
 
 s64 NowNs() {
@@ -104,29 +118,43 @@ IndirectGuard::IndirectGuard(const Instance& instance_, Scheduler& scheduler_)
 
 IndirectGuard::~IndirectGuard() = default;
 
-std::pair<vk::Buffer, u64> IndirectGuard::CheckArgs(const VideoCore::Buffer& args, u64 offset) {
-    return Guard(args, offset, 3, false);
+std::pair<vk::Buffer, u64> IndirectGuard::CheckArgs(const VideoCore::Buffer& args, u64 offset,
+                                                    u32 seq) {
+    return Guard(args, offset, 3, false, seq);
 }
 
 std::pair<vk::Buffer, u64> IndirectGuard::CheckDrawArgs(const VideoCore::Buffer& args, u64 offset,
-                                                        u32 words) {
-    return Guard(args, offset, words, true);
+                                                        u32 words, u32 seq) {
+    return Guard(args, offset, words, true, seq);
 }
 
 std::pair<vk::Buffer, u64> IndirectGuard::Guard(const VideoCore::Buffer& args, u64 offset,
-                                                u32 words, bool draw) {
+                                                u32 words, bool draw, u32 seq) {
     // A storage binding starts at a multiple of the device's alignment: the arguments are
-    // `first` dwords into it.
+    // `first` dwords into it. With the trace on it takes in the bytes around them too.
+    const bool trace = IndirectTrace::Enabled();
     const u64 alignment = instance.StorageMinAlignment();
-    const u64 bind_offset = offset / alignment * alignment;
+    const u64 from = trace ? offset - std::min<u64>(offset, AroundBefore) : offset;
+    const u64 bind_offset = from / alignment * alignment;
     const u32 first = static_cast<u32>((offset - bind_offset) / sizeof(u32));
-    const u64 bind_size = (offset - bind_offset) + words * sizeof(u32);
+    const u64 args_end = (offset - bind_offset) + words * sizeof(u32);
+    const u64 bind_size =
+        trace ? std::max(args_end, std::min<u64>(args_end + AroundBefore,
+                                                 args.SizeBytes() - bind_offset) & ~u64(3))
+              : args_end;
+    const u32 around_first = trace ? static_cast<u32>((from - bind_offset) / sizeof(u32)) : 0;
+    const u32 around_count =
+        trace ? std::min<u32>(AroundWords, static_cast<u32>(bind_size / sizeof(u32)) - around_first)
+              : 0;
     const u32 slot = next_slot.fetch_add(1, std::memory_order_relaxed) % NumSlots;
     const Push push{{max_count[0], max_count[1], max_count[2]},
                     first,
                     draw ? max_draw_total : max_total,
                     slot * SlotSize / u32(sizeof(u32)),
-                    draw ? words : 0};
+                    draw ? words : 0,
+                    seq,
+                    around_first,
+                    around_count};
     scheduler.Record([this, source = args.Handle(), bind_offset, bind_size,
                       push](vk::CommandBuffer cmdbuf) {
         const vk::MemoryBarrier2 before{
@@ -164,8 +192,39 @@ std::pair<vk::Buffer, u64> IndirectGuard::Guard(const VideoCore::Buffer& args, u
         };
         cmdbuf.pipelineBarrier2({.memoryBarrierCount = 1, .pMemoryBarriers = &after});
     });
+    if (trace) {
+        ReportTrace();
+    }
     Report();
     return {checked->Handle(), u64(slot) * SlotSize};
+}
+
+void IndirectGuard::ReportTrace() {
+    // Every 100 ms: the ring holds the last NumRejects; older ones are counted as lost.
+    const s64 now = NowNs();
+    s64 last = last_trace_ns.load(std::memory_order_relaxed);
+    if (now - last < 100'000'000 ||
+        !last_trace_ns.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
+        return;
+    }
+    skipped->Invalidate(0, sizeof(Skipped));
+    const auto* s = reinterpret_cast<const volatile Skipped*>(skipped->mapped_data.data());
+    const u32 head = s->reject_head;
+    if (head - traced_rejects > NumRejects) {
+        std::printf("Indirect trace: %u stopped commands not kept (more than %u in 100 ms)\n",
+                    head - traced_rejects - NumRejects, NumRejects);
+        traced_rejects = head - NumRejects;
+    }
+    for (; traced_rejects != head; ++traced_rejects) {
+        std::array<u32, RejectWords> r;
+        for (u32 i = 0; i < RejectWords; ++i) {
+            r[i] = s->rejects[(traced_rejects % NumRejects) * RejectWords + i];
+        }
+        // r[1]: argument dwords, dwords kept around (<< 8), bytes kept before them (<< 16).
+        const u32 words = std::min<u32>(r[1] & 0xff, 6);
+        const u32 around = std::min<u32>((r[1] >> 8) & 0xff, AroundWords);
+        IndirectTrace::OnRejected(r[0], &r[2], words, &r[8], around, r[1] >> 16);
+    }
 }
 
 void IndirectGuard::Report() {

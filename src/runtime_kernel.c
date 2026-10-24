@@ -177,7 +177,7 @@ static ABI int32_t kernel_gettimeofday(GuestTimeval *tv) {
     if (!tv) return ERR(22);
     return posix_gettimeofday(tv,NULL);
 }
-static ABI int64_t posix_time(int64_t *out) { int64_t t=(int64_t)time(NULL); if (out) *out=t; return t; }
+static ABI int64_t posix_time(int64_t *out) { int64_t t=(int64_t)(host_realtime_ns()/1000000000); if (out) *out=t; return t; }
 
 /* ---- process ---- */
 static ABI int32_t get_pagesize(void) { return PAGE; }

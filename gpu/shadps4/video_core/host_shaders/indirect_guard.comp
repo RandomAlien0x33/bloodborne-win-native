@@ -17,7 +17,12 @@ layout(std430, binding = 2) buffer Skipped {
     uvec3 draw_last;
     uint largest;      // groups of the largest dispatch that ran
     uint draw_largest; // vertices x instances of the largest draw that ran
+    uint reject_head;  // BB_INDIRECT_TRACE: commands stopped, kept in `rejects` (a ring)
+    uint rejects[];
 };
+
+const uint NumRejects = 16;
+const uint RejectWords = 48; // seq, sizes, 6 arguments, 40 dwords around
 
 layout(push_constant) uniform Push {
     uvec3 max_count; // the device's limit per dimension
@@ -25,7 +30,26 @@ layout(push_constant) uniform Push {
     uint max_total;  // groups (vertices or indices for draws) in all
     uint slot;       // where in binding 1 (dwords)
     uint draw;       // dwords of a draw's arguments (4, or 5 indexed); 0: a dispatch
+    uint seq;          // the command's number (IndirectTrace)
+    uint around_first; // BB_INDIRECT_TRACE: the first dword kept around the arguments
+    uint around_count; // and how many (0: the trace is off)
 } push;
+
+// BB_INDIRECT_TRACE: what the GPU read, and the dwords around it, for the report.
+void KeepRejected(uint words) {
+    if (push.around_count == 0) {
+        return;
+    }
+    const uint base = (atomicAdd(reject_head, 1) % NumRejects) * RejectWords;
+    rejects[base] = push.seq;
+    rejects[base + 1] = words | (push.around_count << 8) | ((push.first - push.around_first) * 4) << 16;
+    for (uint i = 0; i < 6; ++i) {
+        rejects[base + 2 + i] = i < words ? args[push.first + i] : 0;
+    }
+    for (uint i = 0; i < push.around_count; ++i) {
+        rejects[base + 8 + i] = args[push.around_first + i];
+    }
+}
 
 void main() {
     if (push.draw != 0) {
@@ -40,6 +64,7 @@ void main() {
         if (!plausible) {
             atomicAdd(skipped_draws, 1);
             draw_last = uvec3(count, instances, args[push.first + 2]);
+            KeepRejected(push.draw);
         } else {
             atomicMax(draw_largest, total);
         }
@@ -58,6 +83,7 @@ void main() {
     if (!plausible) {
         atomicAdd(skipped, 1);
         last = groups;
+        KeepRejected(3);
     } else {
         atomicMax(largest, total);
     }

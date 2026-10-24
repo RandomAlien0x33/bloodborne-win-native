@@ -350,8 +350,15 @@ static u64 GetGpuClock64() {
         return env && env[0] == '1';
     }();
     if (!in_place) {
-        const auto now = std::chrono::high_resolution_clock::now().time_since_epoch();
-        return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+        // The wall clock at the first call, then the steady clock: the system clock can step
+        // back, and the game takes unsigned differences.
+        static const auto base = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::system_clock::now().time_since_epoch()) -
+                                 std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch());
+        const auto now = std::chrono::steady_clock::now().time_since_epoch();
+        return static_cast<u64>(
+            (base + std::chrono::duration_cast<std::chrono::nanoseconds>(now)).count());
     }
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     return static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(now).count()) / 10;

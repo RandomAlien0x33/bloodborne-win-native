@@ -297,7 +297,7 @@ bool AvPlayerSource::Start() {
     m_demuxer_thread.Run([this](std::stop_token stop) { this->DemuxerThread(stop); });
     m_video_decoder_thread.Run([this](std::stop_token stop) { this->VideoDecoderThread(stop); });
     m_audio_decoder_thread.Run([this](std::stop_token stop) { this->AudioDecoderThread(stop); });
-    m_start_time = std::chrono::high_resolution_clock::now();
+    m_start_time = std::chrono::steady_clock::now();
     return true;
 }
 
@@ -340,12 +340,12 @@ bool AvPlayerSource::Stop() {
 }
 
 void AvPlayerSource::Pause() {
-    m_pause_time = std::chrono::high_resolution_clock::now();
+    m_pause_time = std::chrono::steady_clock::now();
     m_is_paused = true;
 }
 
 void AvPlayerSource::Resume() {
-    m_pause_duration += std::chrono::high_resolution_clock::now() - m_pause_time;
+    m_pause_duration += std::chrono::steady_clock::now() - m_pause_time;
     m_is_paused = false;
 }
 
@@ -410,8 +410,8 @@ bool AvPlayerSource::GetAudioData(AvPlayerFrameInfo& audio_info) {
 
     auto frame = m_audio_frames.Pop();
     m_last_audio_ts = frame->info.timestamp;
-    m_last_data_time = std::chrono::high_resolution_clock::now();
-    m_pause_duration = std::chrono::high_resolution_clock::duration(0);
+    m_last_data_time = std::chrono::steady_clock::now();
+    m_pause_duration = std::chrono::steady_clock::duration(0);
 
     audio_info = {};
     audio_info.timestamp = frame->info.timestamp;
@@ -475,7 +475,7 @@ u64 AvPlayerSource::CurrentTime() {
     }
 
     using namespace std::chrono;
-    const auto now = m_is_paused.load() ? m_pause_time : high_resolution_clock::now();
+    const auto now = m_is_paused.load() ? m_pause_time : steady_clock::now();
     if (m_audio_stream_index) {
         const auto last_audio = m_last_data_time.value_or(now);
         const auto elapsed =

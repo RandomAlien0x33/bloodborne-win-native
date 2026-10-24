@@ -110,13 +110,16 @@ public:
     }
 
     /// Invalidates any buffer in the logical page range.
-    void InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks = false);
+    void InvalidateMemory(VAddr device_addr, u64 size, bool assume_locks = false,
+                          bool exact_write = false);
 
     /// bbport: a guest write fault at `device_addr` was handled; unprotect its neighbourhood.
     void ExtendWriteFault(VAddr device_addr, u64 guest_rip = 0);
 
     /// Flushes any GPU modified buffer in the logical page range back to CPU memory.
-    void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool assume_locks = false);
+    /// `exact_write`: [device_addr, device_addr + size) is what the faulting store writes.
+    void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool assume_locks = false,
+                    bool exact_write = false);
 
     /// Who hit a read trap: a guest (or runtime) thread, the GPU command thread (stage A, the
     /// draw pipe drained) or the draw recording thread (stage B: it may not record or flush).
@@ -174,6 +177,8 @@ public:
     /// bbport (BB_PREUPLOAD): uploads up to `budget` bytes of that memory which the CPU changed and
     /// then left alone for a few frames into the arena, ahead of its use (draw recording thread).
     void Preupload(u64 budget);
+    /// bbport (BB_GPU_WRITE_TWINS, BB_INDIRECT_TRACE): some of the range has a twin.
+    static bool HasTwin(VAddr addr, u64 size);
     /// bbport (BB_GPU_WRITE_TWINS): forgets the twins of unmapped guest memory.
     void DropTwins(VAddr addr, u64 size);
 

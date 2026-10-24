@@ -251,10 +251,10 @@ private:
     SWSContextPtr m_sws_context{nullptr, &ReleaseSWSContext};
 
     std::optional<u64> m_last_audio_ts{};
-    std::optional<std::chrono::high_resolution_clock::time_point> m_last_data_time{};
-    std::optional<std::chrono::high_resolution_clock::time_point> m_start_time{};
-    std::chrono::high_resolution_clock::time_point m_pause_time{};
-    std::chrono::high_resolution_clock::duration m_pause_duration{};
+    std::optional<std::chrono::steady_clock::time_point> m_last_data_time{};
+    std::optional<std::chrono::steady_clock::time_point> m_start_time{};
+    std::chrono::steady_clock::time_point m_pause_time{};
+    std::chrono::steady_clock::duration m_pause_duration{};
 };
 
 } // namespace Libraries::AvPlayer

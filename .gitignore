@@ -38,3 +38,8 @@ patches.json
 /CUSA03173/
 /save-backup/
 /debug/
+
+# DLSS 5 test through OptiScaler (local)
+/dlss5/
+/dlss5-uninstall.cmd
+/Bloodborne-dlss5.cmd

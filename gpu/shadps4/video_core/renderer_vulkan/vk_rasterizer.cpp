@@ -40,10 +40,12 @@
 #include "video_core/renderer_vulkan/vk_shader_hle.h"
 #include "video_core/renderer_vulkan/vk_gpu_labels.h"
 #include "video_core/renderer_vulkan/vk_indirect_guard.h"
+#include "video_core/renderer_vulkan/vk_indirect_trace.h"
 #include "video_core/renderer_vulkan/vk_occlusion.h"
 #include "video_core/renderer_vulkan/vk_timestamps.h"
 #include "video_core/texture_cache/image_view.h"
 #include "video_core/texture_cache/texture_cache.h"
+#include <Zydis/Zydis.h>
 
 namespace Vulkan {
 
@@ -230,6 +232,11 @@ bool Rasterizer::WriteDataOnGpu(VAddr address, const void* data, u32 size) {
         runtime.UpdateBuffer(mirror->first, mirror->second, {static_cast<const u8*>(data), size});
     }
     runtime.UpdateBuffer(target->first, target->second, {static_cast<const u8*>(data), size});
+    if (IndirectTrace::Enabled() && size >= 4) {
+        u32 first;
+        std::memcpy(&first, data, sizeof(first));
+        IndirectTrace::Note(IndirectTrace::Event::GpuCommandWrite, address, size, first);
+    }
     if (size <= sizeof(u64) && HonestLabels()) {
         u64 value = 0;
         std::memcpy(&value, data, size);
@@ -1972,8 +1979,12 @@ void Rasterizer::DrawIndirectRecord(const GraphicsPipeline* pipeline, bool is_in
         scheduler.Record([raw_args = buffer->Handle(), base, args_slot](vk::CommandBuffer cmdbuf) {
             Breadcrumbs::CopyArgs(cmdbuf, raw_args, base, args_slot);
         });
+        const u32 seq = IndirectTrace::OnIndirect(
+            indirect.args, stride, true, pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+            buffer_cache.IsRegionGpuModified(indirect.args, stride),
+            buffer_cache.IsInPlace(indirect.args, stride));
         std::tie(args, args_offset) =
-            indirect_guard->CheckDrawArgs(*buffer, base, stride / u32(sizeof(u32)));
+            indirect_guard->CheckDrawArgs(*buffer, base, stride / u32(sizeof(u32)), seq);
     }
 
     const auto state = BeginRendering(pipeline);
@@ -2179,7 +2190,10 @@ void Rasterizer::DispatchIndirectRecord(const ComputePipeline* pipeline, VAddr a
         if (!indirect_guard) {
             indirect_guard = std::make_unique<IndirectGuard>(instance, scheduler);
         }
-        std::tie(args, args_offset) = indirect_guard->CheckArgs(*buffer, base);
+        const u32 seq = IndirectTrace::OnIndirect(
+            address, size, false, pipeline->GetStage(Shader::SwStage::Compute).pgm_hash,
+            buffer_cache.IsRegionGpuModified(address, size), buffer_cache.IsInPlace(address, size));
+        std::tie(args, args_offset) = indirect_guard->CheckArgs(*buffer, base, seq);
     }
     pipeline->BindResources(set_writes, push_data, {image_infos.data(), image_infos.size()},
                             {buffer_infos.data(), buffer_infos.size()});
@@ -3253,6 +3267,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 buffer_infos.emplace_back(record->Handle(), record_offset, 32);
                 bound_buffers.emplace_back(nullptr, 0, 0, desc.is_written);
                 if (desc.is_written) {
+                    IndirectTrace::Note(IndirectTrace::Event::ShaderWrite, vsharp.base_address,
+                                        vsharp.GetSize(), stage.pgm_hash, vsharp.GetStride());
                     texture_cache.InvalidateMemoryFromGPU(
                         vsharp.base_address,
                         memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()));
@@ -3281,6 +3297,8 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                     std::min<u64>(size + adjust, buffer->SizeBytes() - offset_aligned));
                 bound_buffers.emplace_back(buffer, offset, size, desc.is_written);
                 if (desc.is_written) {
+                    IndirectTrace::Note(IndirectTrace::Event::ShaderWrite, vsharp.base_address,
+                                        size, stage.pgm_hash, vsharp.GetStride());
                     // Raw storage-buffer writes can also make an aliased cached image stale.
                     texture_cache.InvalidateMemoryFromGPU(vsharp.base_address, size);
                 }
@@ -4229,6 +4247,7 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
             !buffer_cache.IsRegionGpuModified(address, num_bytes) &&
             !VideoCore::BufferCache::LayerMirrored(address, num_bytes)) {
             BbFreeCheck::Check(address, num_bytes, &value, BbFreeCheck::DmaFill);
+            IndirectTrace::Note(IndirectTrace::Event::Fill, address, num_bytes, value, 0);
             u32* buffer = std::bit_cast<u32*>(address);
             std::fill(buffer, buffer + (num_bytes / sizeof(u32)), value);
             BbWriteLog::Note(address, buffer, num_bytes, BbWriteLog::Dma);
@@ -4244,6 +4263,9 @@ void Rasterizer::FillBuffer(VAddr address, u32 num_bytes, u32 value, bool is_gds
         }
         return buffer_cache.ObtainBuffer(address, num_bytes, true);
     }();
+    if (!is_gds) {
+        IndirectTrace::Note(IndirectTrace::Event::Fill, address, num_bytes, value, 1);
+    }
     runtime.FillBuffer(buffer, offset, num_bytes, value);
 }
 
@@ -4270,6 +4292,7 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
             !texture_cache.FindImageFromRange(src, num_bytes)) {
             // Both buffers were not transferred to GPU yet. Can safely copy in host memory.
             BbFreeCheck::Check(dst, num_bytes, std::bit_cast<const void*>(src), BbFreeCheck::DmaCopy);
+            IndirectTrace::NoteCopy(dst, num_bytes, src, false, 0);
             std::memcpy(std::bit_cast<void*>(dst), std::bit_cast<void*>(src), num_bytes);
             BbWriteLog::Note(dst, std::bit_cast<const void*>(dst), num_bytes, BbWriteLog::Dma);
             if (!VideoCore::WriteTracking()) {
@@ -4278,6 +4301,13 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
             return;
         }
     }
+    // BB_INDIRECT_TRACE: the source's state before the copy reads it.
+    const bool trace_source_gpu = IndirectTrace::Enabled() && !src_gds &&
+                                  buffer_cache.IsRegionGpuModified(src, num_bytes);
+    const bool trace_source_image = IndirectTrace::Enabled() && !src_gds &&
+                                    bool(texture_cache.FindImageFromRange(src, num_bytes));
+    const bool trace_source_twin = IndirectTrace::Enabled() && !src_gds &&
+                                   VideoCore::BufferCache::HasTwin(src, num_bytes);
     texture_cache.InvalidateMemoryFromGPU(dst, num_bytes);
     const auto* gds_buffer = buffer_cache.GetGdsBuffer();
     const auto [src_buffer, src_offset] = [&] -> std::pair<const VideoCore::Buffer*, u64> {
@@ -4297,6 +4327,16 @@ void Rasterizer::CopyBuffer(VAddr dst, VAddr src, u32 num_bytes, bool dst_gds, b
         .dstOffset = dst_offset,
         .size = num_bytes,
     };
+    if (!dst_gds && IndirectTrace::Enabled()) {
+        u32 flags = 0;
+        if (!src_gds) {
+            flags |= trace_source_gpu ? IndirectTrace::SourceGpuModified : 0;
+            flags |= trace_source_image ? IndirectTrace::SourceImage : 0;
+            flags |= buffer_cache.IsInPlace(src, num_bytes) ? IndirectTrace::SourceInPlace : 0;
+            flags |= trace_source_twin ? IndirectTrace::SourceTwin : 0;
+        }
+        IndirectTrace::NoteCopy(dst, num_bytes, src_gds ? ~0ull : u64(src), true, flags);
+    }
     runtime.CopyBuffer(src_buffer, dst_buffer, std::span{&copy, 1});
 }
 
@@ -4308,13 +4348,13 @@ u32 Rasterizer::ReadDataFromGds(u32 gds_offset) {
     return value;
 }
 
-bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks) {
+bool Rasterizer::InvalidateMemory(VAddr addr, u64 size, bool assume_locks, bool exact_write) {
     DrainDrawPipe();
     if (!IsMapped(addr, size)) {
         // Not GPU mapped memory, can skip invalidation logic entirely.
         return false;
     }
-    buffer_cache.InvalidateMemory(addr, size, assume_locks);
+    buffer_cache.InvalidateMemory(addr, size, assume_locks, exact_write);
     texture_cache.InvalidateMemory(addr, size);
     return true;
 }
@@ -4338,6 +4378,11 @@ void Rasterizer::InvalidateAfterWrite(VAddr addr, u64 size) {
 }
 
 void Rasterizer::NoteCommandWrite(VAddr addr, const void* data, u64 size, bool recording_thread) {
+    if (IndirectTrace::Enabled() && size >= 4) {
+        u32 first;
+        std::memcpy(&first, data, sizeof(first));
+        IndirectTrace::Note(IndirectTrace::Event::CommandWrite, addr, size, first);
+    }
     if (VideoCore::WriteTracking() || !IsMapped(addr, size)) {
         return; // tracking catches it, or the GPU does not use it
     }
@@ -4361,9 +4406,63 @@ void Rasterizer::OnCpuWrite(VAddr addr, u64 size) {
     }
 }
 
+namespace {
+/// bbport: the bytes the store at `rip` writes, 0 when not one plain store (string and masked
+/// stores, scatters, an instruction that cannot be read).
+u32 StoreWidth(u64 rip) {
+    if (rip == 0) {
+        return 0;
+    }
+    static const ZydisDecoder decoder = [] {
+        ZydisDecoder d;
+        ZydisDecoderInit(&d, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64);
+        return d;
+    }();
+    ZydisDecodedInstruction inst;
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT];
+    // Not past its page (the next may be unmapped): one that crosses it is not decoded.
+    const u64 length = std::min<u64>(ZYDIS_MAX_INSTRUCTION_LENGTH, 4096 - rip % 4096);
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, reinterpret_cast<const void*>(rip), length,
+                                             &inst, operands))) {
+        return 0;
+    }
+    if (inst.attributes & (ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE |
+                           ZYDIS_ATTRIB_HAS_REPNE)) {
+        return 0;
+    }
+    switch (inst.mnemonic) {
+    case ZYDIS_MNEMONIC_MASKMOVQ:
+    case ZYDIS_MNEMONIC_MASKMOVDQU:
+    case ZYDIS_MNEMONIC_VMASKMOVDQU:
+    case ZYDIS_MNEMONIC_VMASKMOVPS:
+    case ZYDIS_MNEMONIC_VMASKMOVPD:
+    case ZYDIS_MNEMONIC_VPMASKMOVD:
+    case ZYDIS_MNEMONIC_VPMASKMOVQ:
+        return 0;
+    default:
+        break;
+    }
+    u32 width = 0;
+    for (u32 i = 0; i < inst.operand_count; ++i) {
+        const auto& op = operands[i];
+        if (op.type == ZYDIS_OPERAND_TYPE_MEMORY && (op.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE)) {
+            if (width != 0 || op.mem.type != ZYDIS_MEMOP_TYPE_MEM) {
+                return 0; // two written operands, or a vector gather/scatter
+            }
+            width = op.size / 8;
+        }
+    }
+    return width;
+}
+} // namespace
+
 bool Rasterizer::OnWriteFault(VAddr addr, bool assume_locks, u64 guest_rip) {
     DrainDrawPipe();
-    if (!InvalidateMemory(addr, 8, assume_locks)) {
+    // The faulting address is where the store starts, unless it began on the page before (the
+    // fault is then at this page's start): only then is its width the bytes it writes here.
+    const u32 width = StoreWidth(guest_rip);
+    const bool exact = width != 0 && (addr % 4096 != 0 || width == 1);
+    if (!InvalidateMemory(addr, exact ? width : 8, assume_locks, exact)) {
         return false;
     }
     buffer_cache.ExtendWriteFault(addr, guest_rip);

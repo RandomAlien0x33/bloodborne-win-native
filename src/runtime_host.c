@@ -69,12 +69,20 @@ uint64_t host_monotonic_ns(void) {
     uint64_t f = qpc_frequency(), n = (uint64_t)c.QuadPart;
     return n / f * 1000000000u + n % f * 1000000000u / f;
 }
-uint64_t host_realtime_ns(void) {
+/* The wall clock the game sees: the system time at start, then the monotonic clock. The game
+ * takes unsigned differences of it; a step back (the system syncing its time) made them huge
+ * and froze it. */
+static uint64_t system_time_ns(void) {
     FILETIME t;
     GetSystemTimePreciseAsFileTime(&t);
     uint64_t ticks = ((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime; /* 100 ns since 1601 */
     return (ticks - UINT64_C(116444736000000000)) * 100;
 }
+static uint64_t realtime_base;
+__attribute__((constructor)) static void remember_realtime_base(void) {
+    realtime_base = system_time_ns() - host_monotonic_ns();
+}
+uint64_t host_realtime_ns(void) { return realtime_base + host_monotonic_ns(); }
 static __thread HANDLE sleep_timer;
 /* High-resolution waitable timers (Windows 10 1803+) wake within ~0.5 ms; the rest of a
  * short wait is spun, so frame pacing and audio deadlines stay precise. */
@@ -120,7 +128,12 @@ static uint64_t read_clock(clockid_t id) {
     return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
 }
 uint64_t host_monotonic_ns(void) { return read_clock(CLOCK_MONOTONIC); }
-uint64_t host_realtime_ns(void) { return read_clock(CLOCK_REALTIME); }
+/* As on Windows: the start's wall clock, then the monotonic clock (NTP steps it back too). */
+static uint64_t realtime_base;
+__attribute__((constructor)) static void remember_realtime_base(void) {
+    realtime_base = read_clock(CLOCK_REALTIME) - read_clock(CLOCK_MONOTONIC);
+}
+uint64_t host_realtime_ns(void) { return realtime_base + read_clock(CLOCK_MONOTONIC); }
 void host_sleep_ns(uint64_t ns) {
     struct timespec t = {.tv_sec = (time_t)(ns / 1000000000), .tv_nsec = (long)(ns % 1000000000)};
     while (nanosleep(&t, &t) && errno == EINTR) {}
