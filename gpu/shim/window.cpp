@@ -21,6 +21,7 @@ static const char* strcasestr(const char* haystack, const char* needle) {
 #include "common/logging/log.h"
 #include "sdl_window.h"
 #include "bbport_overlay.h"
+#include "bbport_save_menu.h"
 #include "bbport_settings.h"
 #include "bbport_frame_rate.h"
 #include "bbport_mouse_camera.h"
@@ -269,8 +270,10 @@ bool WindowSDL::PollEvents() {
             break;
         }
         case SDL_EVENT_KEY_DOWN:
-            // F11: borderless fullscreen at the desktop size, or back to the window.
-            if (event.key.key == SDLK_F11 && !event.key.repeat) {
+            // F11 or bbport.ini fullscreen_key: borderless fullscreen at the desktop size, or
+            // back to the window.
+            if (!event.key.repeat &&
+                (event.key.key == SDLK_F11 || BbSaveMenu::FullscreenKey(event.key))) {
                 SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
             }
             // F3: 30 FPS for the moment, on and off (a scene that freezes at a higher rate).

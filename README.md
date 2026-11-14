@@ -45,6 +45,14 @@ Windows 10/11 · 116 MB · no game files included
 
 <br>
 
+---
+
+<h1 align="center">👇👇👇 📺 INSTALLATION AND USAGE GUIDE: SEE THE VIDEOS BELOW 👇👇👇</h1>
+
+---
+
+<br>
+
 <table>
 <tr>
 <td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="320" alt="Bloodborne on Windows. How to Install and Play on Windows. Setup guide. Mouse, manual saves support"></a><br><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><sub>Bloodborne on Windows. How to Install and Play on Windows. Setup guide. Mouse, manual saves support</sub></a></td>

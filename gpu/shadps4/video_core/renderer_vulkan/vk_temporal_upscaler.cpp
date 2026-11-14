@@ -334,6 +334,16 @@ bool TemporalUpscaler::RasterScaling() const {
     return !scaled_session && scene_targets.Reduced() && !done_this_frame;
 }
 
+void TemporalUpscaler::OnDisplayPass() {
+    // A frame without any UI draw (the HUD hidden, a view without one): its scene is upscaled
+    // here, while its camera is still the frame's, or its display pass would show the game's
+    // own-size frame.
+    if (!ui_phase && !done_this_frame && Scaled() && ldr_target && camera_motion.Ready() &&
+        Active() && !failed) {
+        RunScaled();
+    }
+}
+
 bool TemporalUpscaler::OnFrameStart() {
     // bbport: BB_PRESET_FILE=<file> holding a preset number, read about once a second: switches
     // the preset like the menu does (scripted tests of live preset changes).

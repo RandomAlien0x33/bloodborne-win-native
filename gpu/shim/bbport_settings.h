@@ -144,6 +144,8 @@ struct Values {
     /// keys (SDL key names, modifiers with '+': "F5", "Ctrl+S"; empty: none). Read at start.
     std::atomic<int> save_copies{15};
     std::string quicksave_key{"F5"}, quickload_key{"F8"};
+    /// A second fullscreen key besides F11 (laptops whose F11 is a media key without Fn).
+    std::string fullscreen_key{"Alt+P"};
     /// The settings menu's position (fraction of the screen), -1 until it is moved.
     std::atomic<float> menu_x{-1.0f}, menu_y{-1.0f};
     // FSR 4 checks (menu): the provider's auto exposure, the jitter sign it is given.

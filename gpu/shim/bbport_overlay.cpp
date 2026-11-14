@@ -19,6 +19,7 @@
 #include "bbport_cheats.h"
 #include "bbport_game_menu.h"
 #include "bbport_save_menu.h"
+#include "bbport_photo.h"
 #include "bbport_settings.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -1124,7 +1125,7 @@ void SaveMessage() {
     }
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
-                                   viewport->WorkPos.y + 40.0f * base_scale),
+                                   viewport->WorkPos.y + 50.0f * base_scale),
                             ImGuiCond_Always, ImVec2(0.5f, 0.0f));
     ImGui::SetNextWindowBgAlpha(0.6f * alpha);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
@@ -1318,6 +1319,19 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
         if (!is_open && !prompt_active && BbSaveMenu::HandleKey(event)) { // F5 / F8: save copies
+            return true;
+        }
+        // H and G (by position, any layout): the player's HUD, the player's model hidden or
+        // shown, anywhere (screenshots).
+        if (down && !is_open && !prompt_active &&
+            (event.key.scancode == SDL_SCANCODE_H || event.key.scancode == SDL_SCANCODE_G)) {
+            if (!event.key.repeat) {
+                if (event.key.scancode == SDL_SCANCODE_H) {
+                    BbPhoto::ToggleHud();
+                } else {
+                    BbPhoto::TogglePlayer();
+                }
+            }
             return true;
         }
         if (down && !event.key.repeat &&

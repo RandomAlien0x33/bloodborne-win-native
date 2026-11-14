@@ -209,6 +209,11 @@ void Poll() {
     }
 }
 
+bool FullscreenKey(const SDL_KeyboardEvent& event) {
+    static const Key key = ParseKey(BbSettings::Get().fullscreen_key);
+    return Matches(key, event);
+}
+
 bool HandleKey(const SDL_Event& event) {
     if (event.type != SDL_EVENT_KEY_DOWN || event.key.repeat) {
         return false;

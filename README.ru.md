@@ -46,6 +46,14 @@ Windows 10/11 · 116 МБ · файлов игры нет
 
 <br>
 
+---
+
+<h1 align="center">👇👇👇 📺 ИНСТРУКЦИЯ ПО УСТАНОВКЕ И ИСПОЛЬЗОВАНИЮ: СМОТРИТЕ В ВИДЕО НИЖЕ 👇👇👇</h1>
+
+---
+
+<br>
+
 <table>
 <tr>
 <td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="320" alt="Bloodborne на Windows: как установить и играть. Инструкция. Мышь, ручные сохранения"></a><br><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><sub>Bloodborne на Windows: как установить и играть. Инструкция. Мышь, ручные сохранения</sub></a></td>

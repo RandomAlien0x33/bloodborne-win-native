@@ -27,6 +27,7 @@ extern "C" void* runtime_low_map(size_t size, int prot);
 
 #include "bbport_save_copies.h"
 #include "bbport_save_menu.h"
+#include "bbport_photo.h"
 #include "bbport_settings.h"
 
 // The runtime serves its copy of menu/optionsetting.gfx (runtime_file.c).
@@ -75,6 +76,16 @@ constexpr u64 AddBlankItem = 0x1be29e0;
 /// The in-game step (step, frame time): runs each frame while the character is in the world (also
 /// with the pause menu open), not on loading screens or the title screen. It acts on "Exit Game".
 constexpr u64 InGameStep = 0x193ac10;
+/// A HUD gauge's binding to its bars (0x1b580e0: gauge, the clip holding Current/Bar, Delay/Bar,
+/// BarFrame/Bar): the way to the HUD's clips (photo mode hides the player's HUD).
+constexpr u64 GaugeBind = 0x1b580e0;
+const u8 GaugeBindPrologue[] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
+using GaugeBindFn = void(GUEST_ABI*)(void*, void*);
+GaugeBindFn gauge_bind_original = nullptr;
+GUEST_ABI void GaugeBindHook(void* gauge, void* clip) {
+    gauge_bind_original(gauge, clip);
+    BbPhoto::NoteGauge(gauge);
+}
 constexpr u64 MakeText = 0x1ae8cc0;      ///< (out 0x40 bytes, category, id): a text entry
 constexpr u64 FactoryToFunction = 0x1b6ed90; ///< ({vtable, fn}, out std::function) -> its __f_
 constexpr u64 CreatePage = 0x1bb4c70;    ///< (out, arg, content std::function): an options page
@@ -1014,6 +1025,7 @@ GUEST_ABI void StepHook(void* step, float frame_time) {
     step_settled.store(settled);
     step_time.store(NowNs());
     BbSaveMenu::GameStep(settled);
+    BbPhoto::GameStep();
     if (const StepListener listener = step_listener.load(std::memory_order_acquire)) {
         listener(settled);
     }
@@ -1200,7 +1212,9 @@ void PatchImage(unsigned char* image, std::uint64_t size) {
         Detour(image, InGameStep, InGameStepPrologue, sizeof(InGameStepPrologue),
                reinterpret_cast<void*>(&StepHook), reinterpret_cast<void**>(&step_original), cursor) &&
         Detour(image, ListDone, ListDonePrologue, sizeof(ListDonePrologue),
-               reinterpret_cast<void*>(&ListDoneHook), reinterpret_cast<void**>(&list_done_original), cursor);
+               reinterpret_cast<void*>(&ListDoneHook), reinterpret_cast<void**>(&list_done_original), cursor) &&
+        Detour(image, GaugeBind, GaugeBindPrologue, sizeof(GaugeBindPrologue),
+               reinterpret_cast<void*>(&GaugeBindHook), reinterpret_cast<void**>(&gauge_bind_original), cursor);
 #ifdef _WIN32
     DWORD old_protect = 0;
     VirtualProtect(stubs, page, PAGE_EXECUTE_READ, &old_protect);

@@ -68,6 +68,8 @@ public:
 
     /// Before a compute dispatch: the post-processing combine shader triggers the upscale.
     void OnDispatch(u64 cs_hash);
+    /// bbport: the display pass starts (before the frame's camera is committed).
+    void OnDisplayPass();
 
     /// Start of a frame in the command stream (display pass).
     bool OnFrameStart();

@@ -14,6 +14,7 @@
 #include "bbport_save_copies.h"
 
 union SDL_Event;
+struct SDL_KeyboardEvent;
 
 namespace BbSaveMenu {
 
@@ -42,6 +43,9 @@ void Poll();
 /// Window thread: the save and load keys (bbport.ini quicksave_key / quickload_key). The load
 /// key loads the newest of the player's copies after a second press. True when consumed.
 bool HandleKey(const SDL_Event& event);
+
+/// The fullscreen key from bbport.ini (fullscreen_key, besides F11) was pressed.
+bool FullscreenKey(const SDL_KeyboardEvent& event);
 
 /// Shows a short message (in the menu language).
 void Notice(const char* english, const char* russian);

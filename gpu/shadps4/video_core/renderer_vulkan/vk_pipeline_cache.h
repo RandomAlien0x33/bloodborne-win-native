@@ -3,10 +3,14 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <shared_mutex>
+#include <thread>
 #include <variant>
 #include <boost/container/static_vector.hpp>
 #include <tsl/robin_map.h>
@@ -148,8 +152,14 @@ public:
                                         std::span<const u32> copy_code);
     void Sync();
 
-    bool LoadComputePipeline(Serialization::Archive& ar);
-    bool LoadGraphicsPipeline(Serialization::Archive& ar);
+    /// bbport: a cached pipeline whose stages are loaded; the driver creates it later
+    /// (Prepare, on several threads) when `defer` is given.
+    struct PreloadJob;
+    bool LoadComputePipeline(Serialization::Archive& ar, PreloadJob* defer = nullptr);
+    bool LoadGraphicsPipeline(Serialization::Archive& ar, PreloadJob* defer = nullptr);
+    /// bbport: the driver's compiled pipelines (VkPipelineCache data) kept in our own file, so a
+    /// new build of the port or a cleared driver cache does not compile them all again.
+    void SaveDriverCache();
     bool LoadPipelineStage(Serialization::Archive& ar, size_t stage);
 
     /// `indirect`: the draw's arguments are in memory (bbport: never skipped while compiling).
@@ -228,7 +238,7 @@ private:
     tsl::robin_map<GraphicsPipelineKey, std::unique_ptr<GraphicsPipeline>> graphics_pipelines;
     PipelineSelection sel{}; ///< GPU thread selection state
     ComputePipelineKey compute_key{};
-    u32 num_new_pipelines{}; // new pipelines added to the cache since the game start
+    std::atomic<u32> num_new_pipelines{}; // new pipelines added to the cache since the game start
 
     // Only if Config::collectShadersForDebug()
     tsl::robin_map<vk::ShaderModule,
@@ -245,6 +255,24 @@ private:
     tsl::robin_map<GraphicsPipelineKey, std::shared_ptr<PendingPipeline>> pending_graphics;
     u64 async_started = 0, async_skipped = 0, async_waited = 0; ///< statistics
     std::unique_ptr<PipelineCompiler> compiler; ///< last: its threads are joined first
+
+    // bbport: driver cache file (SaveDriverCache), written by the saver thread when new
+    // pipelines were made, after Prepare and before exit.
+    void CreateDriverCache();
+    /// After Prepare: the loaded data is confirmed (or dropped when cached pipelines were
+    /// rejected), then saved.
+    void FinishDriverCacheLoad(bool damaged);
+    void DriverCacheSaver();
+    std::mutex driver_cache_mutex; ///< one save at a time
+    std::atomic<u32> driver_cache_saved{0}; ///< num_new_pipelines at the last save
+    std::atomic<bool> driver_cache_loading{false}; ///< loaded data not yet confirmed by Prepare
+    std::mutex saver_mutex;
+    std::condition_variable saver_cv;
+    bool saver_stop = false;
+    std::thread driver_saver;
 };
+
+/// bbport: saves the running game's driver pipeline cache (before exit).
+void SaveDriverPipelineCache();
 
 } // namespace Vulkan

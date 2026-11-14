@@ -5,6 +5,7 @@
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -12,9 +13,11 @@
 #include <iterator>
 #include <memory>
 #include <span>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include "common/serdes.h"
+#include "common/thread.h"
 #include "core/emulator_settings.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/frontend/copy_shader.h"
@@ -165,7 +168,22 @@ bool ComputePipeline::SerializationSupport::Deserialize(Serialization::Archive& 
     return true;
 }
 
-bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
+struct PipelineCache::PreloadJob {
+    bool compute = false;
+    ComputePipelineKey compute_key{};
+    GraphicsPipelineKey graphics_key{};
+    ComputePipeline::SerializationSupport compute_data{};
+    GraphicsPipeline::SerializationSupport graphics_data{};
+    std::array<Shader::RuntimeInfo, MaxShaderStages> runtime_infos{};
+    std::array<const Shader::Info*, MaxShaderStages> infos{};
+    std::array<vk::ShaderModule, MaxShaderStages> modules{};
+    std::optional<Shader::Gcn::FetchShaderData> fetch{};
+    std::unique_ptr<ComputePipeline> compute_pipeline;
+    std::unique_ptr<GraphicsPipeline> graphics_pipeline;
+    std::string error; ///< the driver rejected it (a damaged entry)
+};
+
+bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar, PreloadJob* defer) {
     compute_key.Deserialize(ar);
 
     ComputePipeline::SerializationSupport sdata{};
@@ -182,6 +200,16 @@ bool PipelineCache::LoadComputePipeline(Serialization::Archive& ar) {
 
     if (!LoadPipelineStage(meta_ar, 0)) {
         return false;
+    }
+    if (defer) {
+        defer->compute = true;
+        defer->compute_key = compute_key;
+        defer->compute_data = sdata;
+        defer->infos = sel.infos;
+        defer->modules = sel.modules;
+        sel.infos.fill(nullptr);
+        sel.modules.fill(nullptr);
+        return true;
     }
 
     // bbport: built before it is inserted: a pipeline the driver rejects while preloading throws
@@ -235,7 +263,7 @@ bool GraphicsPipeline::SerializationSupport::Deserialize(Serialization::Archive&
     return true;
 }
 
-bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
+bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar, PreloadJob* defer) {
     sel.graphics_key.Deserialize(ar);
 
     GraphicsPipeline::SerializationSupport sdata{};
@@ -259,6 +287,18 @@ bool PipelineCache::LoadGraphicsPipeline(Serialization::Archive& ar) {
         if (!LoadPipelineStage(meta_ar, stage_idx)) {
             return false;
         }
+    }
+    if (defer) {
+        defer->graphics_key = sel.graphics_key;
+        defer->graphics_data = std::move(sdata);
+        defer->runtime_infos = sel.runtime_infos;
+        defer->infos = sel.infos;
+        defer->modules = sel.modules;
+        defer->fetch = std::move(sel.fetch_shader);
+        sel.infos.fill(nullptr);
+        sel.modules.fill(nullptr);
+        sel.fetch_shader.reset();
+        return true;
     }
 
     auto pipeline = std::make_unique<GraphicsPipeline>(
@@ -403,6 +443,7 @@ void PipelineCache::WarmUp() {
 
 void PipelineCache::Prepare(const ProgressFunc& progress) {
     if (!EmulatorSettings.IsPipelineCacheEnabled()) {
+        FinishDriverCacheLoad(false);
         return;
     }
     const auto save_profile = [this] { SaveCacheProfile(); };
@@ -418,8 +459,11 @@ void PipelineCache::Prepare(const ProgressFunc& progress) {
     Storage::DataBase::Instance().ForEachBlob(
         Storage::BlobType::PipelineKey,
         [&](std::vector<u8>&& data) { keys.push_back(std::move(data)); });
+    // The stages are loaded here one by one (shared program state); the driver's part, creating
+    // each pipeline, is the slow one and runs below on every hardware thread.
+    std::vector<std::unique_ptr<PreloadJob>> jobs;
+    jobs.reserve(keys.size());
     for (auto& data : keys) {
-        progress(1, num_total_pipelines, u32(keys.size()));
         ++num_total_pipelines;
         // bbport: a damaged entry (cut short by a crash or a power loss, or rejected by the
         // driver) used to stop the game at every start until the cache was deleted by hand
@@ -437,15 +481,11 @@ void PipelineCache::Prepare(const ProgressFunc& progress) {
             u32 is_compute{};
             pldata.Read(is_compute);
 
-            bool result{};
-            if (is_compute) {
-                result = LoadComputePipeline(ar);
-            } else {
-                result = LoadGraphicsPipeline(ar);
-            }
-
+            auto job = std::make_unique<PreloadJob>();
+            const bool result = is_compute ? LoadComputePipeline(ar, job.get())
+                                           : LoadGraphicsPipeline(ar, job.get());
             if (result) {
-                ++num_pipelines;
+                jobs.push_back(std::move(job));
             }
         } catch (const std::exception& e) {
             if (num_damaged++ == 0) {
@@ -456,7 +496,83 @@ void PipelineCache::Prepare(const ProgressFunc& progress) {
             sel.fetch_shader.reset();
         }
     }
-    progress(1, num_total_pipelines, u32(keys.size()));
+
+    // The driver creates pipelines on any number of threads at once (VkPipelineCache is
+    // internally synchronized); one per hardware thread of this machine.
+    const u32 hardware = std::max(std::thread::hardware_concurrency(), 1u);
+    u32 threads = hardware;
+    if (const char* env = std::getenv("BB_PREPARE_THREADS"); env && *env) {
+        threads = std::max(u32(std::strtoul(env, nullptr, 10)), 1u);
+    }
+    threads = u32(std::min<size_t>(threads, std::max<size_t>(jobs.size(), 1)));
+    const auto created_from = std::chrono::steady_clock::now();
+    std::atomic<size_t> next{0}, finished{0};
+    const auto create = [&] {
+        for (size_t i; (i = next.fetch_add(1)) < jobs.size(); finished.fetch_add(1)) {
+            auto& job = *jobs[i];
+            try {
+                if (job.compute) {
+                    job.compute_pipeline = std::make_unique<ComputePipeline>(
+                        instance, scheduler, desc_heap, profile, *pipeline_cache, job.compute_key,
+                        *job.infos[0], job.modules[0], job.compute_data, true);
+                } else {
+                    job.graphics_pipeline = std::make_unique<GraphicsPipeline>(
+                        instance, scheduler, desc_heap, profile, job.graphics_key,
+                        *pipeline_cache, job.infos, job.runtime_infos, job.fetch, job.modules,
+                        job.graphics_data, true);
+                }
+            } catch (const std::exception& e) {
+                job.error = e.what();
+            }
+        }
+    };
+    std::vector<std::thread> workers;
+    for (u32 i = 0; i + 1 < threads; ++i) {
+        workers.emplace_back([&] {
+            Common::SetCurrentThreadName("bb:PipePrep");
+            create();
+        });
+    }
+    // This thread shows the progress (one worker fewer stands for it).
+    const u32 skipped = num_total_pipelines - u32(jobs.size());
+    if (workers.empty()) {
+        create();
+    } else {
+        while (finished.load() < jobs.size()) {
+            progress(1, skipped + u32(finished.load()), num_total_pipelines);
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        }
+    }
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    for (auto& job_ptr : jobs) {
+        auto& job = *job_ptr;
+        if (!job.error.empty()) {
+            if (num_damaged++ == 0) {
+                LOG_WARNING(Render, "Pipeline cache: damaged entry ({})", job.error);
+            }
+            continue;
+        }
+        if (job.compute) {
+            if (auto [it, is_new] = compute_pipelines.try_emplace(job.compute_key); is_new) {
+                it.value() = std::move(job.compute_pipeline);
+                ++num_pipelines;
+            }
+        } else {
+            if (auto [it, is_new] = graphics_pipelines.try_emplace(job.graphics_key); is_new) {
+                it.value() = std::move(job.graphics_pipeline);
+                ++num_pipelines;
+            }
+        }
+    }
+    jobs.clear();
+    progress(1, num_total_pipelines, num_total_pipelines);
+    std::printf("GPU: %u cached pipelines created in %.1f s on %u threads (%u hardware threads)\n",
+                num_pipelines,
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - created_from)
+                    .count(),
+                threads, hardware);
 
     if (num_damaged) {
         // Nothing preloaded is trusted: modules of a damaged entry may sit in programs that later
@@ -486,6 +602,7 @@ void PipelineCache::Prepare(const ProgressFunc& progress) {
             // A list whose entries the driver rejects is not imported again.
             SavePipelineListState(list_import, false);
         }
+        FinishDriverCacheLoad(true);
         return;
     }
     if (list_import) {
@@ -502,6 +619,7 @@ void PipelineCache::Prepare(const ProgressFunc& progress) {
     }
 
     Storage::DataBase::Instance().FinishPreload();
+    FinishDriverCacheLoad(false);
 }
 
 std::vector<u32> PipelineCache::CompileStoredStage(

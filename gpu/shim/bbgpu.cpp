@@ -1,6 +1,7 @@
 #include "bbport_write_log.h"
 #include "bbport_cheats.h"
 #include "bbport_game_menu.h"
+#include "bbport_photo.h"
 #ifdef BB_TOUR
 #include "../../tools/tour/bbport_tour.h"
 #endif
@@ -326,6 +327,7 @@ extern "C" int bbgpu_quiesce(unsigned timeout_ms) {
                         std::chrono::steady_clock::now() - start).count();
     std::printf("GPU: %s before exit (%lld ms)\n",
                 done ? "work finished" : "work not finished in time", (long long)ms);
+    Vulkan::SaveDriverPipelineCache();
     std::fflush(stdout);
     return done ? 1 : 0;
 }
@@ -365,6 +367,7 @@ extern "C" void bbgpu_patch_image(unsigned char* image, uint64_t size) {
     BbGnmHooks::PatchImage(image, size);
     BbGameMenu::PatchImage(image, size);
     BbCheats::PatchImage(image, size);
+    BbPhoto::PatchImage(image, size);
     BbMouseCamera::PatchImage(image, size);
     BbGuestHooks::PatchImage(image, size);
     BbFrameRate::PatchImage(image, size);
