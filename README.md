@@ -14,6 +14,8 @@
   newest).
 - **Cheats**, switched on and off at once: in the game's System menu (**Cheats**) and in the
   port's menu (**Cheats** tab). See [Cheats](#cheats).
+- **No shader stutter:** the game's shaders are compiled for your GPU once, at the first launch
+  (with a progress bar), not while you play.
 - **DLSS, FSR 4, FSR 3.1**, output up to 4K, unlocked frame rate.
 
 <br>
@@ -43,17 +45,20 @@ Windows 10/11 · 116 MB · no game files included
 
 <br>
 
-<p>
-<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: installation guide"></a>
-<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: gameplay demo"></a>
-</p>
-
-<p>
-<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: playthrough, part 1"></a>
-<a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><img src="media/video-preview-walkthrough-2.jpg" width="49%" alt="Bloodborne Windows Native on YouTube: playthrough, part 2"></a>
-</p>
-
-**▶ Watch on YouTube: [installation guide](https://www.youtube.com/watch?v=JUkWqngg8r4) · [gameplay demo](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [playthrough, part 1](https://www.youtube.com/watch?v=lZabKv_oRko) · [playthrough, part 2](https://www.youtube.com/watch?v=jj1LN3LUq0E)**
+<table>
+<tr>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="320" alt="Bloodborne on Windows. How to Install and Play on Windows. Setup guide. Mouse, manual saves support"></a><br><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><sub>Bloodborne on Windows. How to Install and Play on Windows. Setup guide. Mouse, manual saves support</sub></a></td>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="320" alt="Bloodborne Windows port. Mouse, manual saves, free camera"></a><br><a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><sub>Bloodborne Windows port. Mouse, manual saves, free camera</sub></a></td>
+</tr>
+<tr>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=4iauL42S9WI"><img src="media/video-preview-arena-1.jpg" width="320" alt="Bloodborne Arena #01 — Vicar Amelia vs Cleric Beast"></a><br><a href="https://www.youtube.com/watch?v=4iauL42S9WI"><sub>Bloodborne Arena #01 — Vicar Amelia vs Cleric Beast</sub></a></td>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=sbkWYdc7c0w"><img src="media/video-preview-arena-2.jpg" width="320" alt="Bloodborne Arena #02 — Blood-starved Beast vs Rabid Dogs"></a><br><a href="https://www.youtube.com/watch?v=sbkWYdc7c0w"><sub>Bloodborne Arena #02 — Blood-starved Beast vs Rabid Dogs</sub></a></td>
+</tr>
+<tr>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="320" alt="Bloodborne on PC Without the Frustration #1 — Yharnam & the Sewers | Playthrough"></a><br><a href="https://www.youtube.com/watch?v=lZabKv_oRko"><sub>Bloodborne on PC Without the Frustration #1 — Yharnam & the Sewers | Playthrough</sub></a></td>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><img src="media/video-preview-walkthrough-2.jpg" width="320" alt="Bloodborne on PC Without the Frustration #2 — Father Gascoigne & Cleric Beast | Playthrough"></a><br><a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><sub>Bloodborne on PC Without the Frustration #2 — Father Gascoigne & Cleric Beast | Playthrough</sub></a></td>
+</tr>
+</table>
 
 A Windows port of *Bloodborne* (PlayStation 4, version 1.09), based on the
 **[Linux port by deadinside28](https://github.com/deadinside28/bloodborne_pc)**.
@@ -84,6 +89,7 @@ translated to Vulkan.
 
 - **Upscaling:** NVIDIA DLSS (RTX cards), AMD FSR 3.1 and FSR 4, TAA; output up to 4K.
 - **Frame rate:** 30 to 144 FPS or unlimited, changed in the menu while you play.
+- **Shader precompilation:** on the first launch the port compiles the game's shaders for your GPU in one pass, with a progress bar, so the game does not stutter compiling them during play.
 - **Settings in the game's own System menu** (Display, Game effects, Additional) and in the
   port's menu (**Insert** or L3+R3).
 - **Mouse and keyboard:** the mouse turns the camera directly, as in PC games.
@@ -109,7 +115,7 @@ translated to Vulkan.
    ```
    `save_dir` is optional: the folder for saves. Empty: `user` next to the port.
    Or leave `game_dir` empty and put the `CUSA03173` folder next to `Bloodborne.cmd`.
-3. Start `Bloodborne.cmd`.
+3. Start `Bloodborne.cmd`. The first launch takes longer: the port compiles the shaders.
 
 The release package already has NVIDIA's `nvngx_dlss.dll` for DLSS. A build from source needs it
 next to `out\bb-probe.exe`: `bash tools/fetch_dlss.sh` downloads it from NVIDIA's DLSS SDK (it is

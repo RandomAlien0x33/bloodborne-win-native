@@ -148,6 +148,18 @@ static void InitTessConstants(IR::ScalarReg sharp_ptr_base, s32 sharp_dword_offs
                               TessellationDataConstantBuffer& tess_constants) {
     info.tess_consts_ptr_base = sharp_ptr_base;
     info.tess_consts_dword_offset = sharp_dword_offset;
+    if (replay_inputs) {
+        // The constants are in guest memory; the replayed runtime info holds the ones used.
+        tess_constants = {};
+        if (runtime_info.sw_stage == SwStage::TessellationControl) {
+            tess_constants.ls_stride = runtime_info.sw.tcs.ls_stride;
+            tess_constants.hs_cp_stride = runtime_info.sw.tcs.hs_output_cp_stride;
+            tess_constants.hs_output_base = runtime_info.sw.tcs.hs_output_base;
+        } else if (runtime_info.sw_stage == SwStage::TessellationEval) {
+            tess_constants.hs_cp_stride = runtime_info.sw.tes.hs_output_cp_stride;
+        }
+        return;
+    }
     info.ReadTessConstantBuffer(tess_constants);
     runtime_info.InitFromTessConstants(tess_constants);
     return;

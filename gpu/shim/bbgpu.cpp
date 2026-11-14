@@ -1,6 +1,9 @@
 #include "bbport_write_log.h"
 #include "bbport_cheats.h"
 #include "bbport_game_menu.h"
+#ifdef BB_TOUR
+#include "../../tools/tour/bbport_tour.h"
+#endif
 #include "bbport_frame_rate.h"
 #include "bbport_mouse_camera.h"
 #include "bbport_gnm_hooks.h"
@@ -365,6 +368,9 @@ extern "C" void bbgpu_patch_image(unsigned char* image, uint64_t size) {
     BbMouseCamera::PatchImage(image, size);
     BbGuestHooks::PatchImage(image, size);
     BbFrameRate::PatchImage(image, size);
+#ifdef BB_TOUR
+    BbTour::PatchImage(image, size);
+#endif
 }
 
 extern "C" int bbgpu_mouse_take(float* dx, float* dy, uint32_t* buttons) {

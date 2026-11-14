@@ -107,7 +107,9 @@ def main():
     commit = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=ROOT, capture_output=True, text=True,
                             check=True).stdout.strip()
     (stage / 'out' / 'VERSION.txt').write_text(f'{a.version} ({commit})\n', encoding='utf-8')
-    for extra in ('nvngx_dlss.dll', 'LICENSE-DLSS-SDK.txt'):
+    # pipeline-list.bin: the shaders the port compiles for the player's GPU at the first start
+    # (tools/tour/make_pipeline_list.py).
+    for extra in ('nvngx_dlss.dll', 'LICENSE-DLSS-SDK.txt', 'pipeline-list.bin'):
         if (out / extra).is_file():
             shutil.copy2(out / extra, stage / 'out')
     for folder in ('scripts', 'patches'):

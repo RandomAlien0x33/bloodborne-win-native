@@ -853,6 +853,9 @@ EmitContext::BufferSpv EmitContext::DefineBuffer(bool is_written, bool is_cohere
     case BufferType::FaultBuffer:
         Name(id, "fault_buffer");
         break;
+    case BufferType::MotionAddresses:
+        Name(id, "motion_addresses");
+        break;
     case BufferType::SharedMemory:
         Name(id, "ssbo_shmem");
         break;
@@ -879,6 +882,8 @@ void EmitContext::DefineBuffers() {
             bda_pagetable_index = buffers.size();
         } else if (desc.buffer_type == BufferType::FaultBuffer) {
             fault_buffer_index = buffers.size();
+        } else if (desc.buffer_type == BufferType::MotionAddresses) {
+            motion_addresses_index = buffers.size();
         }
 
         // Define aliases depending on the shader usage.

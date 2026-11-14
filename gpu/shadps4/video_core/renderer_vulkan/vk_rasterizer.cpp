@@ -72,7 +72,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     // Before the rasterizer is bound: Liverpool enqueues buffers only once it sees it.
     draw_prep = std::make_unique<DrawPreparation>(pipeline_cache);
     scene_targets = std::make_unique<SceneTargets>(instance, scheduler, runtime, texture_cache);
-    // Object motion first: it fixes the buffer addresses the motion shader variants embed.
+    // Object motion first: motion shader variants are compiled only once its buffers exist.
     object_motion = std::make_unique<ObjectMotion>(instance, scheduler);
     camera_motion = std::make_unique<CameraMotion>(instance, scheduler, texture_cache, runtime);
     camera_motion->SetObjectMotion(object_motion.get());
@@ -3195,6 +3195,12 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
             } else if (desc.buffer_type == Shader::BufferType::FaultBuffer) {
                 const auto* fault_buffer = buffer_cache.GetFaultBuffer();
                 buffer_infos.emplace_back(fault_buffer->Handle(), 0, fault_buffer->SizeBytes());
+            } else if (desc.buffer_type == Shader::BufferType::MotionAddresses) {
+                // Read only by motion permutations, which exist only while object motion is on.
+                const vk::Buffer addresses =
+                    object_motion ? object_motion->AddressesBuffer() : vk::Buffer{};
+                buffer_infos.emplace_back(addresses, 0,
+                                          addresses ? ObjectMotion::AddressesSize : VK_WHOLE_SIZE);
             } else if (desc.buffer_type == Shader::BufferType::SharedMemory) {
                 auto& lds_buffer = buffer_cache.GetStreamBuffer();
                 const auto& cs_program = CsRegs();
@@ -4010,6 +4016,9 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
         attachment.image_layout = image->backing->state.layout;
         attachment.clear_value = clear_value.color.uint32;
         attachment.is_clear = is_clear;
+        if (is_clear) {
+            PipelineCache::NoteTargetCleared(col_buf.Address());
+        }
 
         if (reduced) {
             const auto target = scene_targets->Attachment(image_id, desc.view_info);
@@ -4042,6 +4051,9 @@ RenderState Rasterizer::BeginRenderingFull(const GraphicsPipeline* pipeline) {
             (regs.depth_render_control.depth_clear_enable && regs.depth_control.depth_enable &&
              regs.depth_control.depth_write_enable) ||
             texture_cache.IsMetaCleared(htile_address, slice);
+        if (is_depth_clear) {
+            PipelineCache::NoteTargetCleared(regs.depth_buffer.DepthAddress());
+        }
         const bool is_stencil_clear = regs.depth_render_control.stencil_clear_enable;
         texture_cache.TouchMeta(htile_address, slice, false);
         ASSERT(desc.view_info.range.extent.levels == 1 && !image.binding.needs_rebind);

@@ -96,6 +96,17 @@ int runtime_file_top_menu_fixed(void);
 void runtime_pad_press_cross(unsigned delay_ms,unsigned hold_ms);
 /* Presses Options the same way (closing the pause menu after "Save"). */
 void runtime_pad_press_options(unsigned delay_ms,unsigned hold_ms);
+/* Milliseconds since the player last moved the left (0) or right (1) stick by hand, UINT64_MAX
+ * if never (BB_PAD_FILE sticks give way meanwhile). */
+uint64_t runtime_pad_stick_idle_ms(int right);
+/* The player's own sticks (lx ly rx ry, 128 = centre) at the last sample. */
+void runtime_pad_sticks(uint8_t out[4]);
+/* While on, L3 presses are counted (runtime_pad_l3_presses) instead of reaching the game. */
+void runtime_pad_take_l3(int on);
+unsigned runtime_pad_l3_presses(void);
+/* While on, the touchpad button does not reach the game; _down reads it from the gamepad. */
+void runtime_pad_take_touchpad(int on);
+int runtime_pad_touchpad_down(void);
 int runtime_file_mount(const char *guest, const char *host);
 void runtime_file_unmount(const char *guest);
 int runtime_file_translate(const char *guest, char *out, size_t size);

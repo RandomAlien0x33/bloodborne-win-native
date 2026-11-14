@@ -182,6 +182,14 @@ file(GLOB LAYER_SOURCES CONFIGURE_DEPENDS layer/*.cpp)
 file(GLOB GAME_SOURCES CONFIGURE_DEPENDS games/*.cpp)
 # The translator's own command processor (opt-in, BB_CP_DECODER=1): cp/.
 file(GLOB CP_SOURCES CONFIGURE_DEPENDS cp/*.cpp)
+# The map tour (tools/tour, BB_TOUR=ON): a separate build that visits every map to meet the
+# game's pipelines; never part of the game's own build.
+option(BB_TOUR "Build the map tour (tools/tour/build.sh)" OFF)
+if (BB_TOUR)
+    file(GLOB TOUR_SOURCES CONFIGURE_DEPENDS ../tools/tour/*.cpp)
+    list(APPEND CP_SOURCES ${TOUR_SOURCES})
+    add_compile_definitions(BB_TOUR)
+endif()
 if (WIN32)
     set(BBGPU_LIBRARY_TYPE STATIC)
 else()

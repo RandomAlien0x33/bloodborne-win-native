@@ -16,6 +16,7 @@
 #include "bbport_game_menu.h"
 #include "bbport_save_menu.h"
 #include "bbport_overlay.h"
+#include "bbport_settings.h"
 #include "bbport_timeline.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -158,6 +159,84 @@ Presenter::Presenter(Frontend::WindowSDL& window_, AmdGpu::Liverpool* liverpool_
     pp_pass.Create(device, swapchain.GetSurfaceFormat().format);
     BbOverlay::Init(instance, swapchain.GetSurfaceFormat().format, num_images);
 
+    // bbport: the pipeline cache's slow part (the shipped list's shaders at a first start, the
+    // driver creating every cached pipeline) runs here, where its progress can be seen; a quick
+    // one shows nothing.
+    const auto started = std::chrono::steady_clock::now();
+    auto shown = started;
+    rasterizer->GetPipelineCache().Prepare([&](int phase, u32 done, u32 total) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - started < std::chrono::milliseconds{500} ||
+            (now - shown < std::chrono::milliseconds{100} && done != total)) {
+            return;
+        }
+        shown = now;
+        PresentProgress(phase == 0 ? BbSettings::MenuText("Compiling shaders", "Компиляция шейдеров")
+                                   : BbSettings::MenuText("Preparing shaders", "Подготовка шейдеров"),
+                        done, total);
+    });
+}
+
+void Presenter::PresentProgress(const std::string& label, u32 done, u32 total) {
+    if (window.GetWidth() != swapchain.GetWidth() || window.GetHeight() != swapchain.GetHeight() ||
+        !swapchain.IsPresentable()) {
+        std::scoped_lock submit_lock{Scheduler::submit_mutex};
+        swapchain.Recreate(window.GetWidth(), window.GetHeight());
+    }
+    if (!swapchain.IsPresentable() || swapchain.IsSurfaceEmpty() || !swapchain.AcquireNextImage()) {
+        return;
+    }
+    const vk::Image image = swapchain.Image();
+    const vk::Extent2D extent = swapchain.GetExtent();
+    const vk::ImageSubresourceRange color_range{
+        .aspectMask = vk::ImageAspectFlagBits::eColor,
+        .levelCount = 1,
+        .layerCount = 1,
+    };
+    auto& scheduler = present_scheduler;
+    const auto cmdbuf = scheduler.CommandBuffer();
+    const auto barrier = [&](vk::ImageLayout from, vk::ImageLayout to, vk::AccessFlags src,
+                             vk::AccessFlags dst, vk::PipelineStageFlags src_stage,
+                             vk::PipelineStageFlags dst_stage) {
+        const vk::ImageMemoryBarrier info{
+            .srcAccessMask = src,
+            .dstAccessMask = dst,
+            .oldLayout = from,
+            .newLayout = to,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = image,
+            .subresourceRange = color_range,
+        };
+        cmdbuf.pipelineBarrier(src_stage, dst_stage, vk::DependencyFlagBits::eByRegion, {}, {},
+                               info);
+    };
+    barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+            vk::AccessFlagBits::eNone, vk::AccessFlagBits::eTransferWrite,
+            vk::PipelineStageFlagBits::eAllCommands, vk::PipelineStageFlagBits::eTransfer);
+    const vk::ClearColorValue black{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+    cmdbuf.clearColorImage(image, vk::ImageLayout::eTransferDstOptimal, black, color_range);
+    barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
+            vk::AccessFlagBits::eTransferWrite,
+            vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite,
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput);
+    BbOverlay::RenderProgress(cmdbuf, swapchain.ImageView(), extent, label, done, total);
+    barrier(vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::ePresentSrcKHR,
+            vk::AccessFlagBits::eColorAttachmentWrite, vk::AccessFlagBits::eNone,
+            vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eBottomOfPipe);
+
+    SubmitInfo info{};
+    info.AddWait(swapchain.GetImageAcquiredSemaphore());
+    info.AddSignal(swapchain.GetPresentReadySemaphore());
+    scheduler.Flush(info);
+    {
+        std::scoped_lock submit_lock{Scheduler::submit_mutex};
+        swapchain.Present();
+    }
+    // One screen at a time: the next one reuses the semaphores.
+    scheduler.Finish();
 }
 
 Presenter::~Presenter() {

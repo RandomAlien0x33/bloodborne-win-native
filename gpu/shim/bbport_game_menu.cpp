@@ -994,6 +994,7 @@ using StepFn = void (GUEST_ABI *)(void*, float);
 StepFn step_original = nullptr;
 std::atomic<std::int64_t> step_time{0}; ///< steady clock, ns: the step's last run
 std::atomic<bool> step_settled{false};  ///< then: not leaving the world, no "Exit Game" waiting
+std::atomic<StepListener> step_listener{nullptr};
 
 std::int64_t NowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1013,6 +1014,9 @@ GUEST_ABI void StepHook(void* step, float frame_time) {
     step_settled.store(settled);
     step_time.store(NowNs());
     BbSaveMenu::GameStep(settled);
+    if (const StepListener listener = step_listener.load(std::memory_order_acquire)) {
+        listener(settled);
+    }
 }
 
 /// The first row's empty cells: "Saves" takes the place of one, so the rows below stay as they are.
@@ -1146,6 +1150,10 @@ void CancelExitToTitle() {
             reinterpret_cast<std::atomic<u32>*>(state + 0x250)->store(0);
         }
     }
+}
+
+void SetStepListener(StepListener listener) {
+    step_listener.store(listener, std::memory_order_release);
 }
 
 void PatchImage(unsigned char* image, std::uint64_t size) {

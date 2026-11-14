@@ -68,8 +68,10 @@ void ConvertPositionToClipSpace(EmitContext& ctx) {
 
 // bbport: object motion vectors (runtime_info.h, MotionVectors). The vertex shader stores its
 // clip position for this frame and loads the one of the previous frame (same draw, same
-// vertex), both by buffer device address. Disabled accesses are branched around: a shared
-// scratch element would race between all the inactive vertex invocations.
+// vertex), both by buffer device address. The two buffers' addresses come from a binding
+// (BufferType::MotionAddresses), not constants: the SPIR-V does not change between sessions.
+// Disabled accesses are branched around: a shared scratch element would race between all the
+// inactive vertex invocations.
 static void EmitVertexMotion(EmitContext& ctx) {
     const Id u32_type = ctx.U32[1];
     const Id position = ctx.OpLoad(ctx.F32[4], ctx.output_position);
@@ -77,8 +79,16 @@ static void EmitVertexMotion(EmitContext& ctx) {
                                            ctx.push_data_block,
                                            ctx.ConstU32(PushData::MotionParamIndex));
     const Id param_index = ctx.OpLoad(u32_type, param_ptr);
-    const auto address = [&](u64 base, Id index, u32 stride) {
-        return ctx.OpIAdd(ctx.U64, ctx.Constant(ctx.U64, base),
+    const auto [addresses, addresses_pointer] =
+        ctx.buffers[ctx.motion_addresses_index].Alias(EmitContext::PointerType::U64);
+    const auto base_address = [&](u32 slot) {
+        return ctx.OpLoad(ctx.U64, ctx.OpAccessChain(addresses_pointer, addresses,
+                                                     ctx.u32_zero_value, ctx.ConstU32(slot)));
+    };
+    const Id params_base = base_address(0);
+    const Id positions_base = base_address(1);
+    const auto address = [&](Id base, Id index, u32 stride) {
+        return ctx.OpIAdd(ctx.U64, base,
                           ctx.OpIMul(ctx.U64, ctx.OpUConvert(ctx.U64, index),
                                      ctx.Constant(ctx.U64, u64(stride))));
     };
@@ -86,7 +96,7 @@ static void EmitVertexMotion(EmitContext& ctx) {
     const Id f32x4_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, ctx.F32[4]);
     const Id params = ctx.OpLoad(
         ctx.U32[4],
-        ctx.OpConvertUToPtr(u32x4_ptr, address(MotionVectors::params_address, param_index, 32)),
+        ctx.OpConvertUToPtr(u32x4_ptr, address(params_base, param_index, 32)),
         spv::MemoryAccessMask::Aligned, 16u);
     const Id store_base = ctx.OpCompositeExtract(u32_type, params, 0u);
     const Id load_base = ctx.OpCompositeExtract(u32_type, params, 1u);
@@ -94,7 +104,8 @@ static void EmitVertexMotion(EmitContext& ctx) {
     const Id flags = ctx.OpCompositeExtract(u32_type, params, 3u);
     const Id offsets = ctx.OpLoad(
         ctx.U32[4], ctx.OpConvertUToPtr(u32x4_ptr,
-            address(MotionVectors::params_address + 16, param_index, 32)),
+            address(ctx.OpIAdd(ctx.U64, params_base, ctx.Constant(ctx.U64, u64(16))),
+                    param_index, 32)),
         spv::MemoryAccessMask::Aligned, 16u);
     const Id first_vertex = ctx.OpCompositeExtract(u32_type, offsets, 0u);
     const Id first_instance = ctx.OpCompositeExtract(u32_type, offsets, 1u);
@@ -118,8 +129,7 @@ static void EmitVertexMotion(EmitContext& ctx) {
     ctx.OpSelectionMerge(store_merge, spv::SelectionControlMask::MaskNone);
     ctx.OpBranchConditional(do_store, store_label, store_merge);
     ctx.AddLabel(store_label);
-    const Id store_address = address(MotionVectors::positions_address,
-                                     ctx.OpIAdd(u32_type, store_base, slot), 16);
+    const Id store_address = address(positions_base, ctx.OpIAdd(u32_type, store_base, slot), 16);
     // Indexed draws may invoke the same vertex more than once. Atomic component stores
     // avoid write/write races; all these invocations produce the same clip position.
     const Id scalar_ptr = ctx.TypePointer(spv::StorageClass::PhysicalStorageBuffer, u32_type);
@@ -139,7 +149,7 @@ static void EmitVertexMotion(EmitContext& ctx) {
     ctx.OpBranchConditional(do_load, load_label, load_merge);
     ctx.AddLabel(load_label);
     const Id loaded = ctx.OpLoad(
-        ctx.F32[4], ctx.OpConvertUToPtr(f32x4_ptr, address(MotionVectors::positions_address,
+        ctx.F32[4], ctx.OpConvertUToPtr(f32x4_ptr, address(positions_base,
             ctx.OpIAdd(u32_type, load_base, slot), 16)), spv::MemoryAccessMask::Aligned, 16u);
     ctx.OpBranch(load_merge);
     ctx.AddLabel(load_merge);

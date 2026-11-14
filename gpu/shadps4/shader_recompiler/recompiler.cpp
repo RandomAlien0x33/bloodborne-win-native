@@ -114,6 +114,15 @@ IR::Program TranslateProgram(const std::span<const u32>& code, Pools& pools, Inf
     Shader::Optimization::SharedMemorySimplifyPass(program, profile);
     Shader::Optimization::SharedMemoryToStoragePass(program, runtime_info, profile);
     Shader::Optimization::LowerUserClipPlanes(program, runtime_info);
+    // bbport: object motion permutations read their buffers' addresses from this binding. Every
+    // vertex shader declares it, as the clip planes above: a program's permutations share one
+    // resource list.
+    if (program.info.hw_stage == HwStage::Vertex) {
+        program.info.buffers.push_back(BufferResource{
+            .used_types = IR::Type::U64,
+            .buffer_type = BufferType::MotionAddresses,
+        });
+    }
     Shader::Optimization::PhiSimplificationPass(program);
     Shader::Optimization::InverseBallotEliminationPass(program);
     Shader::Optimization::LowerHardwareIntrinsics(program);

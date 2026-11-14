@@ -505,6 +505,11 @@ static void sample_host(PadData *d) {
  * touchpad defaults to a left-side click; lx= ly= rx= ry= (0..255) override
  * the sticks. An empty file releases everything. */
 static struct { uint32_t buttons; int stick[4]; int touch_side; } injected={0,{-1,-1,-1,-1},-1};
+/* The player's own stick deflection (from the centre, 0..128) that overrides the file, and when
+ * each stick (left, right) was last moved that far. */
+#define STICK_MANUAL 40
+static uint64_t stick_manual_us[2];
+static volatile uint8_t stick_last[4]; /* the player's own sticks at the last sample */
 static int replay_armed;      /* 1 while a BB_PAD_REPLAY recording plays, 2 once it ended */
 static uint64_t replay_start; /* 0: (re)start at the next sample */
 static void read_inject(void) {
@@ -646,9 +651,36 @@ static void press(uint32_t buttons,unsigned delay_ms,unsigned hold_ms) {
 }
 void runtime_pad_press_cross(unsigned delay_ms,unsigned hold_ms) { press(BTN_CROSS,delay_ms,hold_ms); }
 void runtime_pad_press_options(unsigned delay_ms,unsigned hold_ms) { press(BTN_OPTIONS,delay_ms,hold_ms); }
+/* runtime_pad_take_l3: L3 presses are counted for the caller (the map tour's stop and go) and
+ * not passed to the game; L3 with R3 (the settings menu) still goes through. */
+static volatile int l3_taken;
+static volatile unsigned l3_presses;
+void runtime_pad_take_l3(int on) { l3_taken=on; }
+unsigned runtime_pad_l3_presses(void) { return l3_presses; }
+/* runtime_pad_take_touchpad: the touchpad button (View on other pads) does not reach the game;
+ * runtime_pad_touchpad_down reads it from the gamepad itself, also while the game does not ask
+ * for input (frozen). */
+static volatile int touchpad_taken;
+void runtime_pad_take_touchpad(int on) { touchpad_taken=on; }
+int runtime_pad_touchpad_down(void) {
+    host_lock(&lock);
+    SDL_Gamepad *g=sdl_ready>0 ? gamepad : NULL;
+    const int down=g && (SDL_GetGamepadButton(g,SDL_GAMEPAD_BUTTON_TOUCHPAD) ||
+                         SDL_GetGamepadButton(g,SDL_GAMEPAD_BUTTON_BACK));
+    host_unlock(&lock);
+    return down;
+}
 static void sample(PadData *d) {
     sample_host(d);
     if (bbgpu_overlay_captures_input()) return;
+    if (l3_taken && !(d->buttons & BTN_R3)) {
+        static int l3_was;
+        const int down=(d->buttons & BTN_L3)!=0;
+        if (down && !l3_was) ++l3_presses;
+        l3_was=down;
+        d->buttons&=~BTN_L3;
+    }
+    if (touchpad_taken) { d->buttons&=~BTN_TOUCHPAD; d->touch_count=0; }
     record_sample(d);
     read_inject();
     replay_sample(d);
@@ -663,8 +695,21 @@ static void sample(PadData *d) {
     if (injected.buttons & BTN_L2) d->l2=255;
     if (injected.buttons & BTN_R2) d->r2=255;
     uint8_t *axes[4]={&d->left_x,&d->left_y,&d->right_x,&d->right_y};
-    for (int i=0;i<4;++i) if (injected.stick[i]>=0) *axes[i]=(uint8_t)injected.stick[i];
+    /* A stick the player moves (out of the dead zone) wins over the file for both its axes. */
+    for (int i=0;i<4;++i) stick_last[i]=*axes[i];
+    for (int s=0;s<2;++s) {
+        const int dx=*axes[2*s]-128, dy=*axes[2*s+1]-128;
+        const int moved=dx*dx+dy*dy>STICK_MANUAL*STICK_MANUAL;
+        if (moved) stick_manual_us[s]=now_us();
+        for (int i=2*s;i<2*s+2;++i) if (!moved && injected.stick[i]>=0) *axes[i]=(uint8_t)injected.stick[i];
+    }
     touch_ids(d);
+}
+
+void runtime_pad_sticks(uint8_t out[4]) { for (int i=0;i<4;++i) out[i]=stick_last[i]; }
+uint64_t runtime_pad_stick_idle_ms(int right) {
+    const uint64_t at=stick_manual_us[right ? 1 : 0];
+    return at ? (now_us()-at)/1000u : UINT64_MAX;
 }
 
 static ABI int32_t pad_init(void) { host_lock(&lock); initialized=1; host_unlock(&lock); return 0; }

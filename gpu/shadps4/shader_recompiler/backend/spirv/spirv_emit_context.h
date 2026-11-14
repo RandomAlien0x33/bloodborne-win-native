@@ -260,7 +260,17 @@ public:
     Id motion_frag_out{};
     [[nodiscard]] bool VertexMotion() const {
         return sw_stage == SwStage::Vertex && hw_stage == HwStage::Vertex &&
-               runtime_info.hw.vs.motion_vectors && MotionVectors::positions_address != 0;
+               runtime_info.hw.vs.motion_vectors && MotionVectors::positions_address != 0 &&
+               HasMotionAddresses();
+    }
+    /// The binding EmitVertexMotion reads the motion buffers' addresses from.
+    [[nodiscard]] bool HasMotionAddresses() const {
+        for (const auto& buffer : info.buffers) {
+            if (buffer.buffer_type == BufferType::MotionAddresses) {
+                return true;
+            }
+        }
+        return false;
     }
     [[nodiscard]] bool FragmentMotion() const {
         return sw_stage == SwStage::Fragment && runtime_info.hw.fs.motion_vectors;
@@ -388,6 +398,7 @@ public:
     size_t flatbuf_index{};
     size_t bda_pagetable_index{};
     size_t fault_buffer_index{};
+    size_t motion_addresses_index{}; ///< bbport: BufferType::MotionAddresses
     Id physical_pointer_type_u32;
 
     Id sampler_type{};

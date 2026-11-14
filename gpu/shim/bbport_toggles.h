@@ -243,4 +243,7 @@ inline std::atomic<std::uint64_t> gpu_signal_faults{0};
 /// Protection changes: calls and pages, those removing write access (TLB shootdowns) apart.
 inline std::atomic<std::uint64_t> protect_calls{0}, protect_pages{0}, protect_revoke_calls{0},
     protect_revoke_pages{0};
+/// Shaders and pipelines compiled since the start (never reset): the map tour waits for it to
+/// stand still.
+inline std::atomic<std::uint64_t> compiles_total{0};
 } // namespace BbStats

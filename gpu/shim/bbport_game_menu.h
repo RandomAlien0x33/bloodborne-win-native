@@ -36,4 +36,8 @@ bool ExitPending();
 std::int64_t StepAgeMs();
 /// Withdraws an "Exit Game" the game has not acted on yet (a load that did not start).
 void CancelExitToTitle();
+/// Called on the game's main thread after each in-game step, with InPlay's view of it
+/// (`settled`: not leaving the world, no "Exit Game" waiting). One listener; null removes it.
+using StepListener = void (*)(bool settled);
+void SetStepListener(StepListener listener);
 } // namespace BbGameMenu

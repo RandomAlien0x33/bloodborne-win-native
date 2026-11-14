@@ -60,6 +60,12 @@ public:
         const Target* target = Find(width, height);
         return target && target->written ? vk::Image(target->image) : vk::Image{};
     }
+    /// The two buffers' device addresses (u64 params, u64 positions) that vertex shaders read
+    /// (Shader::BufferType::MotionAddresses), or null while object motion is off.
+    [[nodiscard]] vk::Buffer AddressesBuffer() const noexcept {
+        return enabled ? addresses_buffer : vk::Buffer{};
+    }
+    static constexpr vk::DeviceSize AddressesSize = 16;
 
 private:
     /// bbport: a motion image per render-target size. Scenes with G-buffer passes at two sizes
@@ -106,6 +112,8 @@ private:
     u32* params_mapped{};
     vk::Buffer positions_buffer{};
     VmaAllocation positions_allocation{};
+    vk::Buffer addresses_buffer{};
+    VmaAllocation addresses_allocation{};
 
     u64 frame = 0;
     u32 params_used = 0;

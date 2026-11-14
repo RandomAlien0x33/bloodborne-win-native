@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <shared_mutex>
@@ -124,6 +125,27 @@ public:
     ~PipelineCache();
 
     void WarmUp();
+    /// bbport: `phase` 0: compiling the shipped list's shaders, 1: creating the cached pipelines.
+    using ProgressFunc = std::function<void(int phase, u32 done, u32 total)>;
+    /// bbport: imports the shipped pipeline list and creates the cached pipelines (both after
+    /// WarmUp, once the presenter can show `progress`).
+    void Prepare(const ProgressFunc& progress);
+    /// bbport BB_SHADER_REPLAY_TEST=<folder of program code by hash>: compiles every stored stage
+    /// again without the game (Shader::replay_inputs) and compares it with the cached SPIR-V.
+    void ReplayTest(const char* code_dir);
+    /// bbport: compiles the shipped pipeline list's shaders for this GPU into the cache
+    /// (vk_pipeline_list.h), once per list. Returns the list's id while it is still to be
+    /// confirmed by a clean load (SavePipelineListState), else 0.
+    u64 ImportPipelineList(const ProgressFunc& progress);
+    void SavePipelineListState(u64 id, bool preparing);
+    void SaveCacheProfile();
+    /// A stage stored in the cache (its description), compiled again from its program's code
+    /// without the game; empty when that fails.
+    std::vector<u32> CompileStoredStage(const Shader::Info& stored,
+                                        const Shader::StageSpecialization& spec,
+                                        const std::optional<Shader::Gcn::FetchShaderData>& fetch,
+                                        size_t perm_idx, std::span<const u32> code,
+                                        std::span<const u32> copy_code);
     void Sync();
 
     bool LoadComputePipeline(Serialization::Archive& ar);
@@ -147,6 +169,10 @@ public:
     [[nodiscard]] const PreparedDraw* UsedPrepared() const noexcept {
         return used_prepared;
     }
+
+    /// bbport BB_ASYNC_PIPELINES: rendering to the target at `address` began with a clear (a
+    /// fast-cleared color buffer, a depth clear). Called by whichever thread records the draw.
+    static void NoteTargetCleared(u64 address);
 
     const ComputePipeline* GetComputePipeline();
 

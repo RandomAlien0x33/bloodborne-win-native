@@ -1518,6 +1518,18 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
     if (CpDecoderEnabled()) {
         cp_cursor.emplace(CpDecoder(), dcb, cp_sink, dcb_depth, false);
     }
+    // After an invalid header the registers may hold values the game never set (packets swallowed
+    // or misread around it), and a draw or dispatch with them can end the game or hang the GPU:
+    // the rest of this buffer runs without its draws and dispatches.
+    u32 dropped_after_bad = 0;
+    bool bad_packet = false;
+    const auto SkipsDraw = [&](const PM4Header* header) {
+        if (bad_packet) {
+            ++dropped_after_bad;
+            return true;
+        }
+        return PredicationSkips(header);
+    };
     while (true) {
         ProcessCommands();
         if (cp_cursor) {
@@ -1548,6 +1560,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             const std::size_t skip = ResyncSkip(dcb);
             std::fprintf(stderr, "PM4: invalid header %#x, resynced %zu dwords later\n",
                          header->raw, skip);
+            bad_packet = true;
             dcb = NextPacket(dcb, skip);
             continue;
         }
@@ -1745,7 +1758,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 rasterizer->ScopeMarker("gfx:{}:DrawIndex2", fmt::make_format_args(cmd_address),
@@ -1763,7 +1776,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 rasterizer->ScopeMarker(
@@ -1781,7 +1794,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 }
                 const auto cmd_address = reinterpret_cast<const void*>(header);
                 const auto* prepared = draw_prep ? draw_prep->NextDraw() : nullptr;
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 rasterizer->ScopeMarker("gfx:{}:DrawIndexAuto", fmt::make_format_args(cmd_address),
@@ -1789,7 +1802,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DrawIndirect: {
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 const auto* draw_indirect = reinterpret_cast<const PM4CmdDrawIndirect*>(header);
@@ -1811,7 +1824,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DrawIndirectMulti: {
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 const auto* draw_indirect =
@@ -1834,7 +1847,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DrawIndexIndirect: {
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 const auto* draw_index_indirect =
@@ -1857,7 +1870,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DrawIndexIndirectMulti: {
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 const auto* draw_index_indirect =
@@ -1880,7 +1893,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DrawIndexIndirectCountMulti: {
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 const auto* draw_index_indirect =
@@ -1906,7 +1919,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DispatchDirect: {
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 const auto* dispatch_direct = reinterpret_cast<const PM4CmdDispatchDirect*>(header);
@@ -1928,7 +1941,7 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                 break;
             }
             case PM4ItOpcode::DispatchIndirect: {
-                if (PredicationSkips(header)) {
+                if (SkipsDraw(header)) {
                     break;
                 }
                 const auto* dispatch_indirect =
@@ -2353,6 +2366,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
             dcb = NextPacket(dcb, header->type3.NumWords() + 1);
             break;
         }
+    }
+
+    if (bad_packet) {
+        std::fprintf(stderr, "PM4: %u draws and dispatches after the invalid header dropped\n",
+                     dropped_after_bad);
     }
 
     if (!selftest.after.empty()) {

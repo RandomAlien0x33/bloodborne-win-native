@@ -1485,4 +1485,67 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     cmdbuf.endRendering();
 }
 
+void RenderProgress(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent,
+                    const std::string& label, u32 done, u32 total) {
+    if (!initialized) {
+        return;
+    }
+    std::scoped_lock lock{imgui_mutex};
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(float(extent.width), float(extent.height));
+    io.DeltaTime = 1.0f / 60.0f;
+    const float scale = std::max(float(extent.height) / 1080.0f, 0.75f);
+    if (std::abs(scale - base_scale) > 0.01f) {
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.ScaleAllSizes(scale / base_scale);
+        style.FontScaleMain = scale;
+        base_scale = scale;
+    }
+    ImGui_ImplVulkan_NewFrame();
+    ImGui::NewFrame();
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float width = 520.0f * base_scale;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushFont(serif_font, 22.0f);
+    ImGui::Begin("##progress", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoBackground);
+    const std::string line = label + "  " + std::to_string(done) + " / " + std::to_string(total);
+    ImGui::PushStyleColor(ImGuiCol_Text, Ui::Bright());
+    ImGui::TextUnformatted(line.c_str());
+    ImGui::PopStyleColor();
+    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, Ui::Gold());
+    ImGui::ProgressBar(total ? float(done) / float(total) : 0.0f, ImVec2(-1.0f, 6.0f * base_scale),
+                       "");
+    ImGui::PopStyleColor();
+    ImGui::End();
+    ImGui::PopFont();
+    ImGui::PopStyleVar(2);
+    ImGui::Render();
+
+    const vk::RenderingAttachmentInfo attachment{
+        .imageView = view,
+        .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+        .loadOp = vk::AttachmentLoadOp::eLoad,
+        .storeOp = vk::AttachmentStoreOp::eStore,
+    };
+    cmdbuf.beginRendering(vk::RenderingInfo{
+        .renderArea = {{0, 0}, extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &attachment,
+    });
+    {
+        std::scoped_lock submit_lock{Vulkan::Scheduler::submit_mutex};
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmdbuf);
+    }
+    cmdbuf.endRendering();
+}
+
 } // namespace BbOverlay

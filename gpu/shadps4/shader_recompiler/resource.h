@@ -73,6 +73,7 @@ enum class BufferType : u8 {
     GdsBuffer,
     SharedMemory,
     ClipPlanes,
+    MotionAddresses, ///< bbport: object motion buffers' device addresses (MotionVectors)
 };
 
 struct BufferResource {

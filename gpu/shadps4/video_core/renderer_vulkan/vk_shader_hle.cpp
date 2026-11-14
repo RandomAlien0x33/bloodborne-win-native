@@ -13,7 +13,14 @@
 #include "bbport_toggles.h"
 #include "video_core/renderer_vulkan/vk_gpu_profiler.h"
 
+#include <atomic>
+#include <cstdio>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 extern std::unique_ptr<AmdGpu::Liverpool> liverpool;
+extern "C" int runtime_memory_vma_info(uintptr_t address, int* prot, int* type, uintptr_t* end);
 
 namespace Vulkan {
 
@@ -134,6 +141,29 @@ static bool MultiCopy(Rasterizer& rasterizer, const VideoCore::Buffer* src,
     return true;
 }
 
+// Guest mappings by the runtime's table; anything else (the executable's image) by the host's.
+static bool ReadableRange(uintptr_t address, u64 size) {
+    if (address == 0) {
+        return false;
+    }
+    int prot = 0, type = -1;
+    uintptr_t end = 0;
+    if (runtime_memory_vma_info(address, &prot, &type, &end)) {
+        return (prot & 1) != 0 && end - address >= size;
+    }
+#ifdef _WIN32
+    MEMORY_BASIC_INFORMATION info;
+    const DWORD readable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
+                           PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    return VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) &&
+           info.State == MEM_COMMIT && (info.Protect & readable) != 0 &&
+           (info.Protect & PAGE_GUARD) == 0 &&
+           reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize - address >= size;
+#else
+    return true;
+#endif
+}
+
 static bool ExecuteCopyShaderHLE(const Shader::Info& info, const AmdGpu::ComputeProgram& cs_program,
                                  Rasterizer& rasterizer) {
     auto& runtime = rasterizer.GetRuntime();
@@ -144,7 +174,6 @@ static bool ExecuteCopyShaderHLE(const Shader::Info& info, const AmdGpu::Compute
     const auto src_buf_sharp = info.buffers[1].GetSharp(info);
     const auto dst_buf_sharp = info.buffers[2].GetSharp(info);
     const auto buf_stride = src_buf_sharp.GetStride();
-    ASSERT(buf_stride == dst_buf_sharp.GetStride());
 
     struct CopyShaderControl {
         u32 dst_idx;
@@ -152,8 +181,27 @@ static bool ExecuteCopyShaderHLE(const Shader::Info& info, const AmdGpu::Compute
         u32 end;
     };
     static_assert(sizeof(CopyShaderControl) == 12);
-    ASSERT(ctl_buf_sharp.GetStride() == sizeof(CopyShaderControl));
-    const auto ctl_buf = reinterpret_cast<const CopyShaderControl*>(ctl_buf_sharp.base_address);
+    // bbport: buffer descriptors that do not fit the copy shader come from a corrupt command
+    // buffer (state left by a bad packet). The dispatch is dropped instead of ending the game;
+    // the control list is read here on the CPU, so it must be mapped guest memory too.
+    const uintptr_t ctl_address = ctl_buf_sharp.base_address;
+    const u64 ctl_bytes = u64(cs_program.dim_x) * sizeof(CopyShaderControl);
+    if (buf_stride == 0 || buf_stride != dst_buf_sharp.GetStride() ||
+        ctl_buf_sharp.GetStride() != sizeof(CopyShaderControl) ||
+        !ReadableRange(ctl_address, ctl_bytes)) {
+        static std::atomic<int> reports{0};
+        if (reports.fetch_add(1, std::memory_order_relaxed) < 8) {
+            std::fprintf(stderr,
+                         "GPU: copy shader dispatch dropped: control %#llx stride %u, %u entries; "
+                         "src %#llx stride %u; dst %#llx stride %u\n",
+                         (unsigned long long)ctl_address, u32(ctl_buf_sharp.GetStride()),
+                         u32(cs_program.dim_x), (unsigned long long)src_buf_sharp.base_address,
+                         u32(buf_stride), (unsigned long long)dst_buf_sharp.base_address,
+                         u32(dst_buf_sharp.GetStride()));
+        }
+        return true;
+    }
+    const auto ctl_buf = reinterpret_cast<const CopyShaderControl*>(ctl_address);
 
     static std::vector<vk::BufferCopy> copies;
     copies.clear();

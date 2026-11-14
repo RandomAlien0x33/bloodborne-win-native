@@ -107,6 +107,10 @@ public:
 private:
     Frame* GetRenderFrame();
 
+    /// bbport: a black screen with `label  done / total` and a bar (the pipeline cache's
+    /// preparation before the game's first frame).
+    void PresentProgress(const std::string& label, u32 done, u32 total);
+
     void RecreateFrame(Frame* frame, u32 width, u32 height);
 
     void SetExpectedGameSize(s32 width, s32 height);

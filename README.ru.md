@@ -15,6 +15,8 @@
   **F8** (загрузить последнюю).
 - **Читы**, включаются и выключаются сразу: в меню System самой игры (**Читы**) и в меню порта
   (вкладка **Читы**). См. [Читы](#читы).
+- **Без статтеров от шейдеров:** шейдеры игры компилируются под вашу видеокарту один раз, при
+  первом запуске (с полосой прогресса), а не во время игры.
 - **DLSS, FSR 4, FSR 3.1**, вывод до 4K, FPS без ограничения.
 
 <br>
@@ -44,17 +46,20 @@ Windows 10/11 · 116 МБ · файлов игры нет
 
 <br>
 
-<p>
-<a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: инструкция по установке"></a>
-<a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: демонстрация игры"></a>
-</p>
-
-<p>
-<a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: прохождение, часть 1"></a>
-<a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><img src="media/video-preview-walkthrough-2.jpg" width="49%" alt="Bloodborne Windows Native на YouTube: прохождение, часть 2"></a>
-</p>
-
-**▶ Смотреть на YouTube: [инструкция по установке](https://www.youtube.com/watch?v=JUkWqngg8r4) · [демонстрация игры](https://www.youtube.com/watch?v=Ur6xRP0DrAA) · [прохождение, часть 1](https://www.youtube.com/watch?v=lZabKv_oRko) · [прохождение, часть 2](https://www.youtube.com/watch?v=jj1LN3LUq0E)**
+<table>
+<tr>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><img src="media/video-preview.jpg" width="320" alt="Bloodborne на Windows: как установить и играть. Инструкция. Мышь, ручные сохранения"></a><br><a href="https://www.youtube.com/watch?v=JUkWqngg8r4"><sub>Bloodborne на Windows: как установить и играть. Инструкция. Мышь, ручные сохранения</sub></a></td>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><img src="media/video-preview-2.jpg" width="320" alt="Bloodborne Windows порт. Мышь, ручные сохранения, свободная камера"></a><br><a href="https://www.youtube.com/watch?v=Ur6xRP0DrAA"><sub>Bloodborne Windows порт. Мышь, ручные сохранения, свободная камера</sub></a></td>
+</tr>
+<tr>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=4iauL42S9WI"><img src="media/video-preview-arena-1.jpg" width="320" alt="Bloodborne Arena #01 — Викарий Амелия против Церковного чудовища"></a><br><a href="https://www.youtube.com/watch?v=4iauL42S9WI"><sub>Bloodborne Arena #01 — Викарий Амелия против Церковного чудовища</sub></a></td>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=sbkWYdc7c0w"><img src="media/video-preview-arena-2.jpg" width="320" alt="Bloodborne Arena #02 — Чудовище-кровоглот против бешеных собак"></a><br><a href="https://www.youtube.com/watch?v=sbkWYdc7c0w"><sub>Bloodborne Arena #02 — Чудовище-кровоглот против бешеных собак</sub></a></td>
+</tr>
+<tr>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=lZabKv_oRko"><img src="media/video-preview-walkthrough.jpg" width="320" alt="Bloodborne на ПК без мучений #1 — Ярнам и канализация | Прохождение"></a><br><a href="https://www.youtube.com/watch?v=lZabKv_oRko"><sub>Bloodborne на ПК без мучений #1 — Ярнам и канализация | Прохождение</sub></a></td>
+<td width="340" align="center" valign="top"><a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><img src="media/video-preview-walkthrough-2.jpg" width="320" alt="Bloodborne на ПК без мучений #2 — Отец Гаскойн и Церковное Чудовище | Прохождение"></a><br><a href="https://www.youtube.com/watch?v=jj1LN3LUq0E"><sub>Bloodborne на ПК без мучений #2 — Отец Гаскойн и Церковное Чудовище | Прохождение</sub></a></td>
+</tr>
+</table>
 
 Порт *Bloodborne* (PlayStation 4, версия 1.09) для Windows на основе
 **[Linux-порта от deadinside28](https://github.com/deadinside28/bloodborne_pc)**.
@@ -85,6 +90,7 @@ Windows 10/11 · 116 МБ · файлов игры нет
 
 - **Апскейлинг:** NVIDIA DLSS (карты RTX), AMD FSR 3.1 и FSR 4, TAA; вывод до 4K.
 - **Частота кадров:** от 30 до 144 FPS или без ограничения, меняется в меню прямо в игре.
+- **Предкомпиляция шейдеров:** при первом запуске порт один раз компилирует шейдеры игры под вашу видеокарту, с полосой прогресса, во избежание статтеров во время игры.
 - **Настройки в собственном меню игры** System (Изображение, Эффекты игры, Дополнительно) и в
   меню порта (**Insert** или L3+R3).
 - **Мышь и клавиатура:** мышь поворачивает камеру напрямую, как в PC-играх.
@@ -110,7 +116,7 @@ Windows 10/11 · 116 МБ · файлов игры нет
    ```
    `save_dir` необязателен: папка для сейвов. Пусто — `user` рядом с портом.
    Или оставьте `game_dir` пустым и положите папку `CUSA03173` рядом с `Bloodborne.cmd`.
-3. Запустите `Bloodborne.cmd`.
+3. Запустите `Bloodborne.cmd`. Первый запуск дольше: порт компилирует шейдеры.
 
 В релизном пакете `nvngx_dlss.dll` от NVIDIA для DLSS уже есть. Для сборки из исходников он нужен
 рядом с `out\bb-probe.exe`: `bash tools/fetch_dlss.sh` скачивает его из DLSS SDK NVIDIA (в этом

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "video_core/renderer_vulkan/vk_object_motion.h"
 
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -64,16 +65,23 @@ ObjectMotion::ObjectMotion(const Instance& instance_, Scheduler& scheduler_)
         return;
     }
     void* mapped = nullptr;
-    u64 params_address = 0, positions_address = 0;
+    void* addresses_mapped = nullptr;
+    u64 params_address = 0, positions_address = 0, addresses_address = 0;
     if (!CreateBuffer(instance, vk::DeviceSize(1 + FrameSlots * ParamsPerFrame) * 32, true,
                       params_buffer, params_allocation, &mapped, params_address) ||
         !CreateBuffer(instance, vk::DeviceSize(1 + 2 * PositionsPerFrame) * 16, false,
-                      positions_buffer, positions_allocation, nullptr, positions_address)) {
+                      positions_buffer, positions_allocation, nullptr, positions_address) ||
+        !CreateBuffer(instance, AddressesSize, true, addresses_buffer, addresses_allocation,
+                      &addresses_mapped, addresses_address)) {
         std::printf("Object motion: buffer creation failed, off\n");
         return;
     }
     params_mapped = static_cast<u32*>(mapped);
     std::memset(params_mapped, 0, 32);
+    // Shaders read the addresses from here instead of embedding them: the SPIR-V is the same in
+    // every session, so motion pipelines load from the shader cache.
+    const std::array<u64, 2> addresses{params_address, positions_address};
+    std::memcpy(addresses_mapped, addresses.data(), sizeof(addresses));
     Shader::MotionVectors::params_address = params_address;
     Shader::MotionVectors::positions_address = positions_address;
     enabled = true;
@@ -88,6 +96,9 @@ ObjectMotion::~ObjectMotion() {
     }
     if (positions_buffer) {
         vmaDestroyBuffer(allocator, positions_buffer, positions_allocation);
+    }
+    if (addresses_buffer) {
+        vmaDestroyBuffer(allocator, addresses_buffer, addresses_allocation);
     }
 }
 

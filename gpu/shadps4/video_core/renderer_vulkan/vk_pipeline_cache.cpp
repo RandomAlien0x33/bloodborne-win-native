@@ -495,6 +495,7 @@ struct CompileTimer {
                                    std::chrono::steady_clock::now() - start)
                                    .count());
         ++g_bb_compiles;
+        ++BbStats::compiles_total;
     }
 };
 } // namespace
@@ -561,6 +562,34 @@ u64 DrawTarget(const AmdGpu::Regs& regs) {
     return regs.depth_buffer.DepthValid() ? regs.depth_buffer.DepthAddress() : 0;
 }
 
+/// Targets whose rendering began with a clear: the frames in a row it did, by target address.
+/// Written by the thread that records draws (NoteTargetCleared), read by pipeline selection.
+/// A slot holds one target; another target in the same slot replaces it (it is then not
+/// known as cleared, which only makes its draws wait).
+struct ClearSlot {
+    std::atomic<u64> address{0};
+    std::atomic<u64> streak{0}; ///< last frame << 32 | frames in a row
+};
+std::array<ClearSlot, 512> clear_slots;
+
+ClearSlot& ClearSlotOf(u64 address) {
+    return clear_slots[(address >> 8 ^ address >> 17) % clear_slots.size()];
+}
+
+/// Frames in a row up to `frame` (or the one before: recording may run a frame behind) in which
+/// rendering to `target` began with a clear.
+u32 ClearStreak(u64 target, u32 frame) {
+    // The address first: a replacing target zeroes the streak before it takes the slot, and its
+    // own streak starts at 1.
+    const ClearSlot& slot = ClearSlotOf(target);
+    if (slot.address.load(std::memory_order_acquire) != target) {
+        return 0;
+    }
+    const u64 streak = slot.streak.load(std::memory_order_acquire);
+    const u32 last = u32(streak >> 32);
+    return frame - last <= 1 ? u32(streak) : 0;
+}
+
 /// Counts the frames in a row a target is drawn to (once per frame and target).
 void NoteDrawTarget(const AmdGpu::Regs& regs) {
     static u64 last_target = 0;
@@ -579,6 +608,27 @@ void NoteDrawTarget(const AmdGpu::Regs& regs) {
     }
 }
 } // namespace
+
+void PipelineCache::NoteTargetCleared(u64 address) {
+    if (address == 0) {
+        return;
+    }
+    const u32 frame = BbStats::frame_number.load(std::memory_order_relaxed);
+    ClearSlot& slot = ClearSlotOf(address);
+    u64 count = 1;
+    if (slot.address.load(std::memory_order_relaxed) == address) {
+        const u64 streak = slot.streak.load(std::memory_order_relaxed);
+        const u32 last = u32(streak >> 32);
+        if (last == frame) {
+            return;
+        }
+        count = last + 1 == frame ? u32(streak) + 1 : 1;
+    } else {
+        slot.streak.store(0, std::memory_order_relaxed);
+        slot.address.store(address, std::memory_order_release);
+    }
+    slot.streak.store(u64(frame) << 32 | count, std::memory_order_release);
+}
 
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
                                                            const PreparedDraw* prepared,
@@ -636,6 +686,7 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         pending_graphics.emplace(sel.graphics_key, job);
         ++async_started;
         ++g_bb_compiles;
+        ++BbStats::compiles_total;
         compiler->Submit([this, job, key = sel.graphics_key, infos = sel.infos,
                           runtime_infos = sel.runtime_infos, fetch = sel.fetch_shader,
                           modules = sel.modules]() mutable {
@@ -738,14 +789,17 @@ bool PipelineCache::AsyncSkippable(const PipelineSelection& selection, bool indi
     if (indirect || selection.regs->num_indices <= FullScreenIndices) {
         return false;
     }
-    // A pass drawn every frame: its render target drawn to in each of the last 8 frames (the
-    // scene, the output, shadow maps, half-size and depth-only passes alike). A one-time render
-    // (a face baked for a character, a texture made once) goes to a target new or used now and
-    // then: compiled at once, as before.
+    // A pass drawn anew every frame: its render target drawn to in each of the last 8 frames,
+    // and cleared at the start of each of them (the scene, shadow maps, half-size and
+    // depth-only passes). The next frame draws such a target whole again. A target drawn to
+    // every frame without a clear keeps what earlier frames drew: an atlas or a probe the game
+    // fills a piece at a time (reflections, a character's lighting) would keep a skipped piece
+    // empty until the area is loaded again. Those draws, and one-time renders, wait.
     constexpr u32 PerFrameStreak = 8;
     const u64 target = DrawTarget(*selection.regs);
     const auto streak = target_streaks.find(target);
-    return target != 0 && streak != target_streaks.end() && streak->second.frames >= PerFrameStreak;
+    return target != 0 && streak != target_streaks.end() &&
+           streak->second.frames >= PerFrameStreak && ClearStreak(target, frame) >= PerFrameStreak;
 }
 
 const ComputePipeline* PipelineCache::GetComputePipeline() {

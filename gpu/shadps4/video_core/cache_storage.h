@@ -34,9 +34,14 @@ public:
     void FinishPreload();
     /// bbport: removes every cached blob (an incompatible cache is rebuilt, not ignored).
     void Clear();
+    /// bbport: returns once every Save so far is on disk.
+    void WaitWrites();
 
     bool Save(BlobType type, const std::string& name, std::vector<u8>&& data);
     bool Save(BlobType type, const std::string& name, std::vector<u32>&& data);
+
+    /// bbport: whether the blob is stored (no error logged when it is not).
+    bool Exists(BlobType type, const std::string& name);
 
     void Load(BlobType type, const std::string& name, std::vector<u8>& data);
     void Load(BlobType type, const std::string& name, std::vector<u32>& data);

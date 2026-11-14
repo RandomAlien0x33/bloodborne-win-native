@@ -32,6 +32,10 @@ bool Visible();
 /// Present thread: draws into `view` (layout ColorAttachmentOptimal).
 void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent);
 
+/// Present thread, before the game's first frame: `label  done / total` and a bar, centred.
+void RenderProgress(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent,
+                    const std::string& label, u32 done, u32 total);
+
 /// The menu or the text dialog is open: the game's input is held neutral.
 bool CapturesInput();
 

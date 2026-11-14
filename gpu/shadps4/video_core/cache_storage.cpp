@@ -13,6 +13,8 @@
 
 #include <miniz.h>
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <future>
@@ -22,7 +24,7 @@
 namespace {
 
 std::mutex submit_mutex{};
-u32 num_requests{};
+std::atomic<u32> num_requests{};
 std::condition_variable_any request_cv{};
 std::queue<std::packaged_task<void()>> req_queue{};
 std::mutex m_request{};
@@ -32,6 +34,13 @@ bool ar_is_read_only{true};
 
 } // namespace
 
+#ifdef BB_TOUR
+namespace BbTour {
+void OnCacheBlob(int type, const std::string& name, const std::string& extension,
+                 const unsigned char* data, std::size_t size);
+}
+#endif
+
 namespace Storage {
 
 void ProcessIO(const std::stop_token& stoken) {
@@ -40,7 +49,7 @@ void ProcessIO(const std::stop_token& stoken) {
     while (!stoken.stop_requested()) {
         {
             std::unique_lock lk{submit_mutex};
-            Common::CondvarWait(request_cv, lk, stoken, [&] { return num_requests; });
+            Common::CondvarWait(request_cv, lk, stoken, [&] { return num_requests.load() != 0; });
         }
 
         if (stoken.stop_requested()) {
@@ -208,6 +217,10 @@ bool DataBase::Save(BlobType type, const std::string& name, std::vector<u8>&& da
     if (!opened) {
         return false;
     }
+#ifdef BB_TOUR
+    BbTour::OnCacheBlob(static_cast<int>(type), name, GetBlobFileExtension(type), data.data(),
+                        data.size());
+#endif
 
     auto path = EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{name}
                                                            : cache_path / name;
@@ -222,6 +235,19 @@ bool DataBase::Save(BlobType type, const std::string& name, std::vector<u32>&& d
     auto path = EmulatorSettings.IsPipelineCacheArchived() ? std::filesystem::path{name}
                                                            : cache_path / name;
     return WriteVector(type, std::move(path), std::move(data));
+}
+
+bool DataBase::Exists(BlobType type, const std::string& name) {
+    if (!opened) {
+        return false;
+    }
+    if (EmulatorSettings.IsPipelineCacheArchived()) {
+        const auto path = std::filesystem::path{name}.replace_extension(GetBlobFileExtension(type));
+        return mz_zip_reader_locate_file(&zip_ar, path.string().c_str(), nullptr, 0) >= 0;
+    }
+    std::error_code ec;
+    return std::filesystem::exists(
+        (cache_path / name).replace_extension(GetBlobFileExtension(type)), ec);
 }
 
 void DataBase::Load(BlobType type, const std::string& name, std::vector<u8>& data) {
@@ -287,6 +313,12 @@ void DataBase::Clear() {
         }
     }
     LOG_WARNING(Render, "Pipeline cache cleared ({} files): it is rebuilt for this build", removed);
+}
+
+void DataBase::WaitWrites() {
+    while (num_requests.load() != 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
 }
 
 void DataBase::FinishPreload() {

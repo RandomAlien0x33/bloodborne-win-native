@@ -85,6 +85,14 @@ struct Info;
 /// bbport: the shader whose SRT walker runs on this thread (the null table report names it).
 extern thread_local const Info* srt_walking_info;
 
+/// bbport: while set, a compile on this thread runs without the game: what it would read from
+/// guest memory (the flattened user data, the fetch shader, the vertex V#s) comes from these
+/// (fetch_shader.h), as the pipeline cache stored them. Used to check a pipeline list.
+struct ReplayInputs;
+extern thread_local const ReplayInputs* replay_inputs;
+/// Fills `flat` from the replay inputs; false when their size is not `size_dw`.
+bool ReplayFlatBuf(std::vector<u32>& flat, u32 size_dw);
+
 struct Info : InfoPersistent {
     struct AttributeFlags {
         bool Get(IR::Attribute attrib, u32 comp = 0) const {
@@ -249,6 +257,10 @@ struct Info : InfoPersistent {
     }
 
     void RefreshFlatBuf() {
+        if (replay_inputs) [[unlikely]] {
+            ReplayFlatBuf(flattened_ud_buf, srt_info.flattened_bufsize_dw);
+            return;
+        }
         flattened_ud_buf.resize(srt_info.flattened_bufsize_dw);
         ASSERT(user_data.size() <= NUM_USER_DATA_REGS);
         std::memcpy(flattened_ud_buf.data(), user_data.data(), user_data.size_bytes());

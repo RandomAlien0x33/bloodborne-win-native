@@ -14,6 +14,9 @@ struct Archive;
 
 namespace Shader::Gcn {
 
+/// The V# of the vertex attribute `semantic` while replay_inputs is set (info.h).
+AmdGpu::Buffer ReplayAttribSharp(u8 semantic);
+
 struct VertexAttribute {
     enum InstanceIdType : u8 {
         None = 0,
@@ -37,7 +40,8 @@ struct VertexAttribute {
     }
 
     constexpr AmdGpu::Buffer GetSharp(const Shader::Info& info) const noexcept {
-        auto buffer = info.ReadUdReg<AmdGpu::Buffer>(sgpr_base, dword_offset);
+        auto buffer = replay_inputs ? ReplayAttribSharp(semantic)
+                                    : info.ReadUdReg<AmdGpu::Buffer>(sgpr_base, dword_offset);
         buffer.base_address += inst_offset;
         if (data_format) {
             buffer.data_format = data_format;
@@ -72,4 +76,22 @@ const u32* GetFetchShaderCode(const Info& info, u32 sgpr_base);
 
 std::optional<FetchShaderData> ParseFetchShader(const Shader::Info& info);
 
+/// What a vertex V# told the compile: its number class and swizzle (the stage's specialization
+/// keeps no more of it).
+struct ReplayAttrib {
+    u8 semantic;
+    AmdGpu::NumberClass num_class;
+    AmdGpu::CompMapping dst_select;
+};
+
 } // namespace Shader::Gcn
+
+namespace Shader {
+
+struct ReplayInputs {
+    std::span<const u32> flat;
+    std::optional<Gcn::FetchShaderData> fetch;
+    std::vector<Gcn::ReplayAttrib> attribs;
+};
+
+} // namespace Shader

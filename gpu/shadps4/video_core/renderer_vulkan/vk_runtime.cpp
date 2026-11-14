@@ -17,6 +17,19 @@
 
 namespace Vulkan {
 
+namespace {
+/// A recorded command and its data share one record chunk (RecordChunk::Capacity): a long region
+/// list goes in several commands of at most this many regions.
+constexpr std::size_t RegionsPerRecord = 2048;
+
+template <typename T, typename F>
+void ForEachRegionPiece(std::span<const T> regions, F&& record) {
+    for (std::size_t at = 0; at < regions.size(); at += RegionsPerRecord) {
+        record(regions.subspan(at, std::min(RegionsPerRecord, regions.size() - at)));
+    }
+}
+} // namespace
+
 static vk::ImageType ConvertImageType(AmdGpu::ImageType type) noexcept {
     switch (type) {
     case AmdGpu::ImageType::Color1D:
@@ -142,9 +155,11 @@ void Runtime::CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* 
         FlushBarriers();
     }
 
-    scheduler.Record([src_handle = src->Handle(), dst_handle = dst->Handle(),
-                      regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBuffer(src_handle, dst_handle, regions.size(), regions.data());
+    ForEachRegionPiece(copies, [&](std::span<const vk::BufferCopy> piece) {
+        scheduler.Record([src_handle = src->Handle(), dst_handle = dst->Handle(),
+                          regions = scheduler.RecordData(piece)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBuffer(src_handle, dst_handle, regions.size(), regions.data());
+        });
     });
 
     if (bounded) {
@@ -190,9 +205,11 @@ void Runtime::CopyFromGuestChunk(vk::Buffer src, const VideoCore::Buffer* dst,
     if (needs_flush) {
         FlushBarriers();
     }
-    scheduler.Record([src, dst_handle = dst->Handle(),
-                      regions = scheduler.RecordData(copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBuffer(src, dst_handle, regions.size(), regions.data());
+    ForEachRegionPiece(copies, [&](std::span<const vk::BufferCopy> piece) {
+        scheduler.Record([src, dst_handle = dst->Handle(),
+                          regions = scheduler.RecordData(piece)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBuffer(src, dst_handle, regions.size(), regions.data());
+        });
     });
     for (const auto& copy : copies) {
         AccessBuffer(dst, copy.dstOffset, copy.size, vk::PipelineStageFlagBits2::eCopy,
@@ -286,10 +303,12 @@ void Runtime::UploadImage(VideoCore::Image* dst, const VideoCore::Buffer* src,
         FlushBarriers();
     }
 
-    scheduler.Record([src_handle = src->Handle(), image = dst->GetImage(),
-                      regions = scheduler.RecordData(upload_copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyBufferToImage(src_handle, image, vk::ImageLayout::eTransferDstOptimal,
-                                 regions.size(), regions.data());
+    ForEachRegionPiece(upload_copies, [&](std::span<const vk::BufferImageCopy> piece) {
+        scheduler.Record([src_handle = src->Handle(), image = dst->GetImage(),
+                          regions = scheduler.RecordData(piece)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyBufferToImage(src_handle, image, vk::ImageLayout::eTransferDstOptimal,
+                                     regions.size(), regions.data());
+        });
     });
 
     for (const auto& copy : upload_copies) {
@@ -318,10 +337,12 @@ void Runtime::DownloadImage(VideoCore::Image* src, const VideoCore::Buffer* dst,
         FlushBarriers();
     }
 
-    scheduler.Record([image = src->GetImage(), buffer = dst->Handle(),
-                      regions = scheduler.RecordData(download_copies)](vk::CommandBuffer cmdbuf) {
-        cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, buffer,
-                                 regions.size(), regions.data());
+    ForEachRegionPiece(download_copies, [&](std::span<const vk::BufferImageCopy> piece) {
+        scheduler.Record([image = src->GetImage(), buffer = dst->Handle(),
+                          regions = scheduler.RecordData(piece)](vk::CommandBuffer cmdbuf) {
+            cmdbuf.copyImageToBuffer(image, vk::ImageLayout::eTransferSrcOptimal, buffer,
+                                     regions.size(), regions.data());
+        });
     });
 
     for (const auto& copy : download_copies) {
